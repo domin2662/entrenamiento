@@ -1,0 +1,2 @@
+# entrenamiento
+calculo estado entrenamiento
