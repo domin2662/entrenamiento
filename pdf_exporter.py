@@ -28,6 +28,15 @@ class TrainingPlanPDFExporter:
         'text_light': (0.46, 0.46, 0.46),    # Texto secundario
         'background': (0.98, 0.98, 0.98),    # Fondo claro
         'white': (1.0, 1.0, 1.0),
+        # Colores pastel para tablas (versiones suaves de los colores de marca)
+        'pastel_blue': (0.88, 0.94, 0.99),       # #E1F0FD - Azul pastel suave
+        'pastel_green': (0.91, 0.96, 0.91),      # #E8F5E8 - Verde pastel suave
+        'pastel_orange': (1.0, 0.95, 0.88),      # #FFF3E0 - Naranja pastel suave
+        'pastel_purple': (0.95, 0.91, 0.97),     # #F3E8F8 - Morado pastel suave
+        'pastel_gray': (0.96, 0.96, 0.97),       # #F5F5F7 - Gris pastel suave
+        'table_header': (0.13, 0.59, 0.95),      # Azul para headers de tabla
+        'table_border': (0.85, 0.87, 0.90),      # Gris suave para bordes
+        'table_alt_row': (0.97, 0.98, 0.99),     # Gris muy claro para filas alternadas
     }
 
     # Colores para tipos de entrenamiento (RGB 0-255)
@@ -455,52 +464,64 @@ class TrainingPlanPDFExporter:
 
         primary_color = colors.Color(*self.COLORS['primary'])
         dark_color = colors.Color(*self.COLORS['dark'])
+        secondary_color = colors.Color(*self.COLORS['secondary'])
 
         # Espaciado superior
-        elements.append(Spacer(1, 2*cm))
+        elements.append(Spacer(1, 0.8*cm))
 
-        # Icono de running (emoji grande)
-        elements.append(Paragraph(
-            '<font size="60">🏃</font>',
-            styles['Title_ES']
-        ))
-        elements.append(Spacer(1, 0.5*cm))
+        # ========== LOGO SEPARADO DEL TÍTULO ==========
+        # Logo en su propio contenedor con fondo de marca
+        logo_table = Table(
+            [[Paragraph('<font size="48" color="#2196F3">🏃</font>', styles['Title_ES'])]],
+            colWidths=[80]
+        )
+        logo_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('BACKGROUND', (0, 0), (-1, -1), colors.Color(*self.COLORS['pastel_blue'])),
+            ('BOX', (0, 0), (-1, -1), 2, primary_color),
+            ('TOPPADDING', (0, 0), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+            ('LEFTPADDING', (0, 0), (-1, -1), 12),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 12),
+        ]))
+        elements.append(logo_table)
+        elements.append(Spacer(1, 0.4*cm))
 
-        # Título principal
-        elements.append(Paragraph(
-            "Plan de Entrenamiento<br/>Personalizado",
-            styles['Title_ES']
-        ))
+        # ========== TÍTULO PRINCIPAL (SEPARADO DEL LOGO) ==========
+        title_content = [
+            [Paragraph("Plan de Entrenamiento<br/>Personalizado", styles['Title_ES'])],
+            [Spacer(1, 0.3*cm)],
+            [HRFlowable(width="50%", thickness=2, color=primary_color,
+                        spaceBefore=5, spaceAfter=8, hAlign='CENTER')],
+            [Paragraph(f"<b>{self.BRAND_NAME}</b><br/><font size='10'>{self.BRAND_SUBTITLE}</font>",
+                       styles['Brand_ES'])],
+        ]
+        title_table = Table(title_content, colWidths=[450])
+        title_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('BOX', (0, 0), (-1, -1), 1.5, primary_color),
+            ('BACKGROUND', (0, 0), (-1, -1), colors.Color(*self.COLORS['pastel_blue'])),
+            ('TOPPADDING', (0, 0), (-1, -1), 18),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 18),
+            ('LEFTPADDING', (0, 0), (-1, -1), 25),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 25),
+        ]))
+        elements.append(title_table)
+        elements.append(Spacer(1, 0.8*cm))
 
-        # Línea decorativa
-        elements.append(Spacer(1, 0.3*cm))
-        elements.append(HRFlowable(width="60%", thickness=2, color=primary_color,
-                                   spaceBefore=5, spaceAfter=5, hAlign='CENTER'))
-        elements.append(Spacer(1, 0.3*cm))
-
-        # Branding
-        elements.append(Paragraph(
-            f"{self.BRAND_NAME}<br/><font size='11'>{self.BRAND_SUBTITLE}</font>",
-            styles['Brand_ES']
-        ))
-        elements.append(Spacer(1, 1.5*cm))
-
-        # Información del objetivo en caja estilizada
+        # ========== INFORMACIÓN DEL OBJETIVO ==========
         target_dist = self.plan.get('target_distance', 21.1)
         target_date = self.plan.get('target_date', datetime.now())
         if isinstance(target_date, datetime):
-            target_date_str = target_date.strftime('%d de %B de %Y').replace(
-                'January', 'Enero').replace('February', 'Febrero').replace('March', 'Marzo'
-                ).replace('April', 'Abril').replace('May', 'Mayo').replace('June', 'Junio'
-                ).replace('July', 'Julio').replace('August', 'Agosto').replace('September', 'Septiembre'
-                ).replace('October', 'Octubre').replace('November', 'Noviembre').replace('December', 'Diciembre')
+            target_date_str = target_date.strftime('%Y-%m-%d')
         else:
             target_date_str = str(target_date)
 
         dist_names = {10: '10K', 15: '15K', 21.1: 'Media Maratón', 42.2: 'Maratón'}
         dist_name = dist_names.get(target_dist, f'{target_dist}K')
 
-        # Tabla de objetivo estilizada
         goal_data = [
             ['🎯 OBJETIVO', dist_name],
             ['📅 FECHA', target_date_str],
@@ -509,9 +530,9 @@ class TrainingPlanPDFExporter:
 
         goal_table = Table(goal_data, colWidths=[150, 250])
         goal_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (0, -1), colors.Color(*self.COLORS['background'])),
+            ('BACKGROUND', (0, 0), (0, -1), colors.Color(*self.COLORS['pastel_gray'])),
             ('BACKGROUND', (1, 0), (1, -1), colors.white),
-            ('FONTSIZE', (0, 0), (-1, -1), 12),
+            ('FONTSIZE', (0, 0), (-1, -1), 11),
             ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
             ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
             ('TEXTCOLOR', (0, 0), (0, -1), dark_color),
@@ -520,13 +541,13 @@ class TrainingPlanPDFExporter:
             ('ALIGN', (0, 0), (0, -1), 'LEFT'),
             ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('BOX', (0, 0), (-1, -1), 1, colors.Color(*self.COLORS['background'])),
-            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(0.9, 0.9, 0.9)),
+            ('BOX', (0, 0), (-1, -1), 1, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(*self.COLORS['table_border'])),
         ]))
         elements.append(goal_table)
-        elements.append(Spacer(1, 1.5*cm))
+        elements.append(Spacer(1, 0.6*cm))
 
-        # Perfil del atleta en tabla estilizada
+        # ========== PERFIL DEL ATLETA ==========
         if self.profile:
             elements.append(Paragraph("👤 Perfil del Atleta", styles['SubHeading_ES']))
             elements.append(Spacer(1, 0.3*cm))
@@ -541,6 +562,7 @@ class TrainingPlanPDFExporter:
 
             profile_table = Table(profile_data, colWidths=[80, 100, 80, 100])
             profile_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.Color(*self.COLORS['pastel_blue'])),
                 ('FONTSIZE', (0, 0), (-1, -1), 10),
                 ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
                 ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
@@ -548,21 +570,259 @@ class TrainingPlanPDFExporter:
                 ('TEXTCOLOR', (2, 0), (2, -1), colors.Color(*self.COLORS['text_light'])),
                 ('TEXTCOLOR', (1, 0), (1, -1), dark_color),
                 ('TEXTCOLOR', (3, 0), (3, -1), dark_color),
-                ('PADDING', (0, 0), (-1, -1), 8),
+                ('PADDING', (0, 0), (-1, -1), 10),
                 ('ALIGN', (1, 0), (1, -1), 'LEFT'),
                 ('ALIGN', (3, 0), (3, -1), 'LEFT'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(0.9, 0.9, 0.9)),
+                ('BOX', (0, 0), (-1, -1), 1, colors.Color(*self.COLORS['table_border'])),
+                ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(*self.COLORS['table_border'])),
             ]))
             elements.append(profile_table)
+            elements.append(Spacer(1, 0.6*cm))
 
-        elements.append(Spacer(1, 2*cm))
+        # ========== FITNESS SCORE ACTUAL ==========
+        fitness_score = self.profile.get('fitness_score', {})
+        if fitness_score:
+            elements.extend(self._create_fitness_score_section(
+                fitness_score, styles, Paragraph, Spacer, Table, TableStyle, colors, HRFlowable
+            ))
+
+        elements.append(Spacer(1, 0.6*cm))
 
         # Fecha de generación
         elements.append(Paragraph(
             f"Generado el {datetime.now().strftime('%d/%m/%Y a las %H:%M')}",
             styles['Small_ES']
         ))
+
+        return elements
+
+    def _create_fitness_score_section(self, fitness_score, styles, Paragraph, Spacer, Table, TableStyle, colors, HRFlowable):
+        """Crea la sección de Fitness Score con métricas detalladas y gráfico de evolución."""
+        from reportlab.lib.units import cm
+        from reportlab.graphics.shapes import Drawing, Rect, String, Line, PolyLine
+        from reportlab.graphics.charts.lineplots import LinePlot
+        from reportlab.graphics import renderPDF
+        from reportlab.lib.colors import Color
+        from reportlab.platypus import KeepTogether
+        elements = []
+
+        primary_color = colors.Color(*self.COLORS['primary'])
+        dark_color = colors.Color(*self.COLORS['dark'])
+        secondary_color = colors.Color(*self.COLORS['secondary'])
+
+        elements.append(Paragraph("🏆 Fitness Score - Estado de Forma", styles['SubHeading_ES']))
+        elements.append(Spacer(1, 0.3*cm))
+
+        score_value = fitness_score.get('fitness_score', 0)
+        ctl_value = fitness_score.get('ctl', 0)
+        atl_value = fitness_score.get('atl', 0)
+        tsb_value = fitness_score.get('tsb', 0)
+        form_status = fitness_score.get('form_status', '-')
+        percentile = fitness_score.get('percentile', 0)
+        percentile_label = fitness_score.get('percentile_label', '-')
+
+        # Determinar color según el score
+        if score_value >= 70:
+            score_color = colors.Color(0.30, 0.69, 0.31)  # Verde
+            score_bg = colors.Color(*self.COLORS['pastel_green'])
+        elif score_value >= 50:
+            score_color = colors.Color(*self.COLORS['primary'])  # Azul
+            score_bg = colors.Color(*self.COLORS['pastel_blue'])
+        elif score_value >= 30:
+            score_color = colors.Color(1.0, 0.60, 0.0)  # Naranja
+            score_bg = colors.Color(*self.COLORS['pastel_orange'])
+        else:
+            score_color = colors.Color(0.96, 0.26, 0.21)  # Rojo
+            score_bg = colors.Color(1.0, 0.93, 0.93)
+
+        # ========== TABLA UNIFICADA DE FITNESS SCORE ==========
+        # Color TSB según valor
+        if tsb_value > 10:
+            tsb_hex = "#4CAF50"
+        elif tsb_value > -10:
+            tsb_hex = "#2196F3"
+        elif tsb_value > -25:
+            tsb_hex = "#FF9800"
+        else:
+            tsb_hex = "#F54336"
+
+        # Ancho total fijo para todas las tablas: 480px
+        total_width = 480
+
+        # Tabla principal con Score y Percentil (4 columnas para alinear con métricas)
+        main_data = [
+            # Header row
+            ['🎯 FITNESS SCORE', '', '📊 PERCENTIL', ''],
+            # Values row
+            [
+                Paragraph(f"<font size='15' color='#{int(score_color.red*255):02x}{int(score_color.green*255):02x}{int(score_color.blue*255):02x}'><b>{score_value:.0f}</b></font><font size='14' color='#666666'>/100</font>", styles['Center_ES']),
+                '',
+                Paragraph(f"<font size='10' color='#2196F3'><b>{percentile}%</b></font><br/><font size='9' color='#666666'>{percentile_label}</font>", styles['Center_ES']),
+                ''
+            ],
+        ]
+
+        main_table = Table(main_data, colWidths=[total_width/2, 0, total_width/2, 0])
+        main_table.setStyle(TableStyle([
+            # Header
+            ('BACKGROUND', (0, 0), (-1, 0), colors.Color(*self.COLORS['pastel_gray'])),
+            ('SPAN', (0, 0), (1, 0)),  # Merge first two columns for header
+            ('SPAN', (2, 0), (3, 0)),  # Merge last two columns for header
+            ('SPAN', (0, 1), (1, 1)),  # Merge first two columns for value
+            ('SPAN', (2, 1), (3, 1)),  # Merge last two columns for value
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.Color(*self.COLORS['text_light'])),
+            # Values
+            ('BACKGROUND', (0, 1), (1, 1), score_bg),
+            ('BACKGROUND', (2, 1), (3, 1), colors.Color(*self.COLORS['pastel_blue'])),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('PADDING', (0, 0), (-1, 0), 8),
+            ('PADDING', (0, 1), (-1, 1), 18),
+            ('BOX', (0, 0), (-1, -1), 1, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBEFORE', (2, 0), (2, -1), 0.5, colors.Color(*self.COLORS['table_border'])),
+        ]))
+        elements.append(main_table)
+        elements.append(Spacer(1, 0.15*cm))
+
+        # ========== MÉTRICAS CTL/ATL/TSB/ESTADO ==========
+        # Anchos proporcionales: 100 + 100 + 80 + 200 = 480
+        metrics_data = [
+            ['💪 CTL (Forma)', '⚡ ATL (Fatiga)', '⚖️ TSB', '📈 Estado'],
+            [
+                Paragraph(f"<font size='14' color='#4CAF50'><b>{ctl_value:.1f}</b></font>", styles['Center_ES']),
+                Paragraph(f"<font size='14' color='#FF5722'><b>{atl_value:.1f}</b></font>", styles['Center_ES']),
+                Paragraph(f"<font size='14' color='{tsb_hex}'><b>{tsb_value:.1f}</b></font>", styles['Center_ES']),
+                Paragraph(f"<font size='10' color='#2E3336'>{form_status}</font>", styles['Center_ES'])
+            ]
+        ]
+
+        metrics_table = Table(metrics_data, colWidths=[100, 100, 80, 200])
+        metrics_table.setStyle(TableStyle([
+            # Header row
+            ('BACKGROUND', (0, 0), (-1, 0), colors.Color(*self.COLORS['pastel_gray'])),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.Color(*self.COLORS['text_light'])),
+            # Values row backgrounds
+            ('BACKGROUND', (0, 1), (0, 1), colors.Color(*self.COLORS['pastel_green'])),
+            ('BACKGROUND', (1, 1), (1, 1), colors.Color(*self.COLORS['pastel_orange'])),
+            ('BACKGROUND', (2, 1), (2, 1), colors.Color(*self.COLORS['pastel_purple'])),
+            ('BACKGROUND', (3, 1), (3, 1), colors.Color(*self.COLORS['pastel_blue'])),
+            # Alignment and padding
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('PADDING', (0, 0), (-1, 0), 8),
+            ('PADDING', (0, 1), (-1, 1), 12),
+            ('BOX', (0, 0), (-1, -1), 1, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBEFORE', (1, 0), (-1, -1), 0.5, colors.Color(*self.COLORS['table_border'])),
+        ]))
+        elements.append(metrics_table)
+        elements.append(Spacer(1, 0.3*cm))
+
+        # ========== GRÁFICO DE EVOLUCIÓN (últimas 10 semanas) ==========
+        evolution_data = fitness_score.get('evolution_data', [])
+        if evolution_data and len(evolution_data) > 1:
+            # Create elements for the evolution section that should stay together
+            evolution_elements = []
+            evolution_elements.append(Paragraph("📈 Evolución Últimas 10 Semanas", styles['SubHeading_ES']))
+            evolution_elements.append(Spacer(1, 0.2*cm))
+
+            # Tomar últimos 70 días (10 semanas) de datos
+            recent_data = evolution_data[-70:] if len(evolution_data) > 70 else evolution_data
+
+            # Crear gráfico con Drawing
+            chart_width = 400
+            chart_height = 120
+            drawing = Drawing(chart_width, chart_height)
+
+            # Preparar datos para el gráfico
+            fs_scores = [d.get('fitness_score', 0) for d in recent_data]
+            ctl_scores = [d.get('ctl', 0) for d in recent_data]
+            atl_scores = [d.get('atl', 0) for d in recent_data]
+
+            if fs_scores:
+                max_val = max(max(fs_scores), max(ctl_scores), max(atl_scores), 1) * 1.1
+                min_val = min(min(fs_scores), min(ctl_scores), min(atl_scores), 0) * 0.9
+
+                # Área del gráfico
+                margin_left = 35
+                margin_bottom = 20
+                margin_top = 10
+                margin_right = 10
+                plot_width = chart_width - margin_left - margin_right
+                plot_height = chart_height - margin_bottom - margin_top
+
+                # Fondo del gráfico
+                drawing.add(Rect(margin_left, margin_bottom, plot_width, plot_height,
+                               fillColor=Color(0.98, 0.98, 0.99), strokeColor=Color(0.9, 0.9, 0.9)))
+
+                # Líneas de grid horizontales
+                for i in range(5):
+                    y = margin_bottom + (i * plot_height / 4)
+                    drawing.add(Line(margin_left, y, margin_left + plot_width, y,
+                                   strokeColor=Color(0.92, 0.92, 0.92), strokeWidth=0.5))
+                    val = min_val + (i * (max_val - min_val) / 4)
+                    drawing.add(String(margin_left - 5, y - 3, f"{val:.0f}",
+                                      fontSize=6, fillColor=Color(0.5, 0.5, 0.5), textAnchor='end'))
+
+                # Función para convertir valor a coordenada Y
+                def val_to_y(val):
+                    if max_val == min_val:
+                        return margin_bottom + plot_height / 2
+                    return margin_bottom + ((val - min_val) / (max_val - min_val)) * plot_height
+
+                # Dibujar líneas de datos
+                n_points = len(fs_scores)
+                if n_points > 1:
+                    x_step = plot_width / (n_points - 1)
+
+                    # Fitness Score (azul)
+                    fs_points = []
+                    for i, score in enumerate(fs_scores):
+                        x = margin_left + i * x_step
+                        y = val_to_y(score)
+                        fs_points.extend([x, y])
+                    drawing.add(PolyLine(fs_points, strokeColor=Color(0.13, 0.59, 0.95), strokeWidth=2))
+
+                    # CTL (verde)
+                    ctl_points = []
+                    for i, score in enumerate(ctl_scores):
+                        x = margin_left + i * x_step
+                        y = val_to_y(score)
+                        ctl_points.extend([x, y])
+                    drawing.add(PolyLine(ctl_points, strokeColor=Color(0.30, 0.69, 0.31), strokeWidth=1.5))
+
+                    # ATL (naranja)
+                    atl_points = []
+                    for i, score in enumerate(atl_scores):
+                        x = margin_left + i * x_step
+                        y = val_to_y(score)
+                        atl_points.extend([x, y])
+                    drawing.add(PolyLine(atl_points, strokeColor=Color(1.0, 0.34, 0.13), strokeWidth=1.5))
+
+                # Leyenda
+                legend_y = chart_height - 8
+                drawing.add(Line(chart_width - 120, legend_y, chart_width - 105, legend_y,
+                               strokeColor=Color(0.13, 0.59, 0.95), strokeWidth=2))
+                drawing.add(String(chart_width - 100, legend_y - 3, "Score", fontSize=7, fillColor=Color(0.3, 0.3, 0.3)))
+
+                drawing.add(Line(chart_width - 70, legend_y, chart_width - 55, legend_y,
+                               strokeColor=Color(0.30, 0.69, 0.31), strokeWidth=1.5))
+                drawing.add(String(chart_width - 50, legend_y - 3, "CTL", fontSize=7, fillColor=Color(0.3, 0.3, 0.3)))
+
+                drawing.add(Line(chart_width - 30, legend_y, chart_width - 15, legend_y,
+                               strokeColor=Color(1.0, 0.34, 0.13), strokeWidth=1.5))
+                drawing.add(String(chart_width - 10, legend_y - 3, "ATL", fontSize=7, fillColor=Color(0.3, 0.3, 0.3)))
+
+                evolution_elements.append(drawing)
+
+            # Use KeepTogether to ensure title and graph stay on same page
+            elements.append(KeepTogether(evolution_elements))
 
         return elements
 
@@ -592,18 +852,20 @@ class TrainingPlanPDFExporter:
 
         stats_table = Table(stats_data, colWidths=[120, 100, 120, 120])
         stats_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.Color(*self.COLORS['background'])),
-            ('BACKGROUND', (0, 1), (-1, 1), colors.white),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.Color(*self.COLORS['pastel_gray'])),
+            ('BACKGROUND', (0, 1), (-1, 1), colors.Color(*self.COLORS['pastel_blue'])),
             ('FONTSIZE', (0, 0), (-1, 0), 9),
             ('FONTSIZE', (0, 1), (-1, 1), 14),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTNAME', (0, 1), (-1, 1), 'Helvetica-Bold'),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.Color(*self.COLORS['text_light'])),
             ('TEXTCOLOR', (0, 1), (-1, 1), primary_color),
-            ('PADDING', (0, 0), (-1, -1), 10),
+            ('PADDING', (0, 0), (-1, -1), 12),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('BOX', (0, 0), (-1, -1), 1, colors.Color(0.9, 0.9, 0.9)),
-            ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.Color(0.9, 0.9, 0.9)),
+            ('BOX', (0, 0), (-1, -1), 1, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBEFORE', (1, 0), (-1, -1), 0.5, colors.Color(*self.COLORS['table_border'])),
         ]))
         elements.append(stats_table)
         elements.append(Spacer(1, 0.8*cm))
@@ -638,26 +900,28 @@ class TrainingPlanPDFExporter:
         week_table = Table(week_data, colWidths=[45, 90, 80, 60, 85])
 
         style_commands = [
-            ('BACKGROUND', (0, 0), (-1, 0), primary_color),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.Color(*self.COLORS['table_header'])),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 9),
             ('FONTSIZE', (0, 1), (-1, -1), 9),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('PADDING', (0, 0), (-1, -1), 6),
+            ('PADDING', (0, 0), (-1, -1), 8),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
             ('TOPPADDING', (0, 0), (-1, -1), 8),
-            ('BOX', (0, 0), (-1, -1), 1, colors.Color(0.85, 0.85, 0.85)),
-            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(0.9, 0.9, 0.9)),
+            ('BOX', (0, 0), (-1, -1), 1, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(*self.COLORS['table_border'])),
         ]
 
-        # Colorear filas alternadas y por fase
+        # Colorear filas alternadas y por fase con colores pastel
         for i, week in enumerate(self.plan.get('weeks', []), 1):
-            if i % 2 == 0:
-                style_commands.append(('BACKGROUND', (0, i), (-1, i), colors.Color(0.97, 0.97, 0.97)))
             if week.get('is_recovery'):
-                style_commands.append(('BACKGROUND', (0, i), (-1, i), colors.Color(0.9, 0.95, 1.0)))
+                style_commands.append(('BACKGROUND', (0, i), (-1, i), colors.Color(*self.COLORS['pastel_blue'])))
+            elif i % 2 == 0:
+                style_commands.append(('BACKGROUND', (0, i), (-1, i), colors.Color(*self.COLORS['table_alt_row'])))
+            else:
+                style_commands.append(('BACKGROUND', (0, i), (-1, i), colors.white))
 
         week_table.setStyle(TableStyle(style_commands))
         elements.append(week_table)
@@ -727,8 +991,17 @@ class TrainingPlanPDFExporter:
 
         hr_table = Table(zone_data, colWidths=[40, 85, 55, 55, 65, 180])
 
+        # Pastel backgrounds for each zone row
+        zone_pastel_colors = [
+            colors.Color(0.91, 0.96, 0.91),  # Pastel green Z1
+            colors.Color(0.93, 0.97, 0.91),  # Pastel light green Z2
+            colors.Color(1.00, 0.97, 0.88),  # Pastel yellow Z3
+            colors.Color(1.00, 0.93, 0.88),  # Pastel orange Z4
+            colors.Color(1.00, 0.91, 0.91),  # Pastel red Z5
+        ]
+
         style_commands = [
-            ('BACKGROUND', (0, 0), (-1, 0), dark_color),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.Color(*self.COLORS['table_header'])),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 9),
@@ -737,20 +1010,21 @@ class TrainingPlanPDFExporter:
             ('ALIGN', (1, 1), (1, -1), 'LEFT'),
             ('ALIGN', (-1, 1), (-1, -1), 'LEFT'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('PADDING', (0, 0), (-1, -1), 8),
-            ('BOX', (0, 0), (-1, -1), 1, colors.Color(0.85, 0.85, 0.85)),
-            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(0.9, 0.9, 0.9)),
+            ('PADDING', (0, 0), (-1, -1), 10),
+            ('BOX', (0, 0), (-1, -1), 1, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(*self.COLORS['table_border'])),
         ]
 
-        # Colorear indicadores de zona
-        for i, zone_color in enumerate(zone_colors_list):
+        # Colorear indicadores de zona y fondo pastel de filas
+        for i, (zone_color, pastel_color) in enumerate(zip(zone_colors_list, zone_pastel_colors)):
             style_commands.append(('BACKGROUND', (0, i+1), (0, i+1), zone_color))
             style_commands.append(('TEXTCOLOR', (0, i+1), (0, i+1), colors.white))
             style_commands.append(('FONTNAME', (0, i+1), (0, i+1), 'Helvetica-Bold'))
+            style_commands.append(('BACKGROUND', (1, i+1), (-1, i+1), pastel_color))
 
         hr_table.setStyle(TableStyle(style_commands))
         elements.append(hr_table)
-        elements.append(Spacer(1, 1*cm))
+        elements.append(Spacer(1, 0.8*cm))
 
         # ========== ZONAS DE RITMO ==========
         elements.append(Paragraph("⏱️ Zonas de Ritmo (Pace)", styles['SubHeading_ES']))
@@ -773,7 +1047,7 @@ class TrainingPlanPDFExporter:
         pace_table = Table(pace_data, colWidths=[40, 120, 80, 80, 180])
 
         pace_style_commands = [
-            ('BACKGROUND', (0, 0), (-1, 0), primary_color),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.Color(*self.COLORS['table_header'])),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 9),
@@ -782,16 +1056,17 @@ class TrainingPlanPDFExporter:
             ('ALIGN', (1, 1), (1, -1), 'LEFT'),
             ('ALIGN', (-1, 1), (-1, -1), 'LEFT'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('PADDING', (0, 0), (-1, -1), 8),
-            ('BOX', (0, 0), (-1, -1), 1, colors.Color(0.85, 0.85, 0.85)),
-            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(0.9, 0.9, 0.9)),
+            ('PADDING', (0, 0), (-1, -1), 10),
+            ('BOX', (0, 0), (-1, -1), 1, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(*self.COLORS['table_border'])),
         ]
 
-        # Colorear indicadores de zona de ritmo
-        for i, zone_color in enumerate(zone_colors_list):
+        # Colorear indicadores de zona de ritmo con fondo pastel
+        for i, (zone_color, pastel_color) in enumerate(zip(zone_colors_list, zone_pastel_colors)):
             pace_style_commands.append(('BACKGROUND', (0, i+1), (0, i+1), zone_color))
             pace_style_commands.append(('TEXTCOLOR', (0, i+1), (0, i+1), colors.white))
             pace_style_commands.append(('FONTNAME', (0, i+1), (0, i+1), 'Helvetica-Bold'))
+            pace_style_commands.append(('BACKGROUND', (1, i+1), (-1, i+1), pastel_color))
 
         pace_table.setStyle(TableStyle(pace_style_commands))
         elements.append(pace_table)
@@ -886,7 +1161,7 @@ class TrainingPlanPDFExporter:
         workout_table = Table(workout_data, colWidths=[40, 95, 40, 40, 220])
 
         style_commands = [
-            ('BACKGROUND', (0, 0), (-1, 0), dark_color),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.Color(*self.COLORS['table_header'])),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 9),
@@ -896,18 +1171,21 @@ class TrainingPlanPDFExporter:
             ('ALIGN', (1, 1), (1, -1), 'LEFT'),
             ('ALIGN', (4, 1), (4, -1), 'LEFT'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('PADDING', (0, 0), (-1, -1), 7),
-            ('BOX', (0, 0), (-1, -1), 1, colors.Color(0.85, 0.85, 0.85)),
-            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(0.9, 0.9, 0.9)),
+            ('PADDING', (0, 0), (-1, -1), 8),
+            ('BOX', (0, 0), (-1, -1), 1, colors.Color(*self.COLORS['table_border'])),
+            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.Color(*self.COLORS['table_border'])),
         ]
 
-        # Colorear filas según tipo de entrenamiento
+        # Colorear filas según tipo de entrenamiento con colores pastel suaves
         for i, (day_en, _) in enumerate(zip(days_order, days_es)):
             workout = week.get('workouts', {}).get(day_en, {'type': 'Rest'})
             workout_type = workout.get('type', 'Rest')
             rgb = self.WORKOUT_COLORS.get(workout_type, (200, 200, 200))
-            # Color más suave para el fondo
-            row_color = colors.Color(rgb[0]/255, rgb[1]/255, rgb[2]/255, alpha=0.15)
+            # Color pastel muy suave para el fondo (más claro y menos saturado)
+            pastel_r = 0.9 + (rgb[0]/255) * 0.1
+            pastel_g = 0.9 + (rgb[1]/255) * 0.1
+            pastel_b = 0.9 + (rgb[2]/255) * 0.1
+            row_color = colors.Color(min(1.0, pastel_r), min(1.0, pastel_g), min(1.0, pastel_b))
             style_commands.append(('BACKGROUND', (0, i+1), (-1, i+1), row_color))
 
         workout_table.setStyle(TableStyle(style_commands))
@@ -1068,14 +1346,15 @@ class TrainingPlanPDFExporter:
 
             seg_table = Table(seg_data, colWidths=[20, 95, 60, 80, 95, 32])
 
+            # Pastel zone colors for segment rows
             zone_colors = {
-                '1': colors.Color(0.30, 0.69, 0.31, alpha=0.2),
-                '2': colors.Color(0.55, 0.76, 0.29, alpha=0.2),
-                '3': colors.Color(1.00, 0.76, 0.03, alpha=0.2),
-                '4': colors.Color(1.00, 0.34, 0.13, alpha=0.2),
-                '5': colors.Color(0.96, 0.26, 0.21, alpha=0.2),
-                '4-5': colors.Color(0.96, 0.26, 0.21, alpha=0.2),
-                '2-4': colors.Color(1.00, 0.60, 0.0, alpha=0.2),
+                '1': colors.Color(0.91, 0.96, 0.91),  # Pastel green
+                '2': colors.Color(0.93, 0.97, 0.91),  # Pastel light green
+                '3': colors.Color(1.00, 0.97, 0.90),  # Pastel yellow
+                '4': colors.Color(1.00, 0.93, 0.90),  # Pastel orange
+                '5': colors.Color(1.00, 0.92, 0.92),  # Pastel red
+                '4-5': colors.Color(1.00, 0.92, 0.92),
+                '2-4': colors.Color(1.00, 0.95, 0.88),
             }
 
             style_commands = [
@@ -1088,15 +1367,18 @@ class TrainingPlanPDFExporter:
                 ('ALIGN', (2, 0), (-1, -1), 'CENTER'),
                 ('ALIGN', (1, 1), (1, -1), 'LEFT'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('PADDING', (0, 0), (-1, -1), 4),
-                ('BOX', (0, 0), (-1, -1), 0.5, colors.Color(0.8, 0.8, 0.8)),
-                ('LINEBELOW', (0, 0), (-1, -2), 0.3, colors.Color(0.9, 0.9, 0.9)),
+                ('PADDING', (0, 0), (-1, -1), 5),
+                ('BOX', (0, 0), (-1, -1), 0.5, colors.Color(*self.COLORS['table_border'])),
+                ('LINEBELOW', (0, 0), (-1, -2), 0.3, colors.Color(*self.COLORS['table_border'])),
             ]
 
             for idx, segment in enumerate(segments, 1):
                 zone = str(segment.get('zone', '2'))
                 if zone in zone_colors:
                     style_commands.append(('BACKGROUND', (0, idx), (-1, idx), zone_colors[zone]))
+                else:
+                    # Default pastel for unlisted zones
+                    style_commands.append(('BACKGROUND', (0, idx), (-1, idx), colors.Color(*self.COLORS['table_alt_row'])))
 
             seg_table.setStyle(TableStyle(style_commands))
             elements.append(seg_table)

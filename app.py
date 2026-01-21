@@ -86,7 +86,7 @@ def main():
                 "Moderado/Tempo (Entrenamiento mixto con series tempo)",
                 "Alta Intensidad (Intervalos y trabajo de velocidad)"
             ],
-            index=1
+            index=2
         )
 
         # Map selection to code
@@ -539,7 +539,7 @@ def main():
 
         # Pace zones if PR available
         if best_5k_time or best_10k_time:
-            st.subheader("Zonas de Ritmo")
+            st.subheader("⏱️ Zonas de Ritmo")
             pace_zones = zones_calculator.calculate_pace_zones(best_5k_time, best_10k_time)
 
             pace_translations = {
@@ -547,12 +547,80 @@ def main():
                 'Marathon Pace': 'Ritmo Maratón',
                 'Threshold Pace': 'Ritmo Umbral',
                 'Interval Pace': 'Ritmo Intervalos',
-                'Repetition Pace': 'Ritmo Repeticiones'
+                'Repetition Pace': 'Ritmo Repeticiones',
+                'Recuperación': 'Recuperación'
             }
 
-            for zone_type, pace in pace_zones.items():
+            pace_colors = ['#4CAF50', '#8BC34A', '#CDDC39', '#FFC107', '#FF9800', '#FF5722']
+            pace_icons = ['🚶', '🏃', '🏃‍♂️', '⚡', '🔥', '🚀']
+
+            for i, (zone_type, pace_data) in enumerate(pace_zones.items()):
                 translated = pace_translations.get(zone_type, zone_type)
-                st.write(f"**{translated}:** {pace}")
+                color = pace_colors[i % len(pace_colors)]
+                icon = pace_icons[i % len(pace_icons)]
+
+                with st.container():
+                    col1, col2, col3 = st.columns([2, 2, 3])
+                    with col1:
+                        st.markdown(f"""
+                        <div style="background: linear-gradient(90deg, {color}22, transparent);
+                                    padding: 8px 12px; border-left: 4px solid {color}; border-radius: 4px;">
+                            <span style="font-size: 1.1em;">{icon} <strong>{translated}</strong></span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    with col2:
+                        st.markdown(f"""
+                        <div style="text-align: center; padding: 8px;">
+                            <span style="font-size: 1.3em; font-weight: bold; color: {color};">
+                                {pace_data['pace_min']} - {pace_data['pace_max']}
+                            </span>
+                            <span style="font-size: 0.9em; color: #666;"> /km</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    with col3:
+                        st.markdown(f"""
+                        <div style="padding: 8px; color: #555; font-style: italic;">
+                            {pace_data['description']}
+                        </div>
+                        """, unsafe_allow_html=True)
+                st.divider()
+
+            # Pace zones visualization chart
+            fig_pace = go.Figure()
+            pace_names = [pace_translations.get(z, z) for z in pace_zones.keys()]
+
+            for i, (zone_type, pace_data) in enumerate(pace_zones.items()):
+                # Convert pace to seconds for visualization
+                pace_min_parts = pace_data['pace_min'].split(':')
+                pace_max_parts = pace_data['pace_max'].split(':')
+                pace_min_sec = int(pace_min_parts[0]) * 60 + int(pace_min_parts[1])
+                pace_max_sec = int(pace_max_parts[0]) * 60 + int(pace_max_parts[1])
+
+                fig_pace.add_trace(go.Bar(
+                    name=pace_translations.get(zone_type, zone_type),
+                    x=[pace_translations.get(zone_type, zone_type)],
+                    y=[pace_max_sec - pace_min_sec],
+                    base=pace_min_sec,
+                    marker_color=pace_colors[i % len(pace_colors)],
+                    text=f"{pace_data['pace_min']} - {pace_data['pace_max']}",
+                    textposition='inside',
+                    hovertemplate=f"<b>{pace_translations.get(zone_type, zone_type)}</b><br>" +
+                                  f"Ritmo: {pace_data['pace_min']} - {pace_data['pace_max']} /km<br>" +
+                                  f"{pace_data['description']}<extra></extra>"
+                ))
+
+            fig_pace.update_layout(
+                title='📊 Visualización de Zonas de Ritmo',
+                yaxis_title='Ritmo (segundos/km)',
+                showlegend=False,
+                barmode='group',
+                yaxis=dict(
+                    tickmode='array',
+                    tickvals=[180, 210, 240, 270, 300, 330, 360, 390, 420, 450],
+                    ticktext=['3:00', '3:30', '4:00', '4:30', '5:00', '5:30', '6:00', '6:30', '7:00', '7:30']
+                )
+            )
+            st.plotly_chart(fig_pace, use_container_width=True)
 
     # Tab 4: Training Plan
     with tab4:
@@ -996,6 +1064,10 @@ def main():
                     # Add additional profile data for pace zones calculation
                     athlete_profile['best_5k_time'] = best_5k_time
                     athlete_profile['best_10k_time'] = best_10k_time
+
+                    # Add fitness score data if available
+                    if st.session_state.fitness_score is not None:
+                        athlete_profile['fitness_score'] = st.session_state.fitness_score
 
                     # Generate PDF with pace zones
                     pdf_exporter = TrainingPlanPDFExporter(
