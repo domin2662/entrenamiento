@@ -119,7 +119,16 @@ class GarminDataAnalyzer:
                 'velocidad_media': 'avg_speed',
                 'avg_speed': 'avg_speed',
                 'ritmo_medio': 'avg_pace',
-                'avg_pace': 'avg_pace'
+                'avg_pace': 'avg_pace',
+                # Power
+                'potencia_media': 'avg_power',
+                'potencia_maxima': 'max_power',
+                'avg_power': 'avg_power',
+                'max_power': 'max_power',
+                'normalized_power': 'normalized_power',
+                'potencia_normalizada': 'normalized_power',
+                'potencia_media_de_pedaleo': 'avg_power',
+                'power': 'avg_power'
             }
 
             df.rename(columns=column_mappings, inplace=True)
@@ -185,6 +194,15 @@ class GarminDataAnalyzer:
                     df['calories'] = df['calories'].apply(self._parse_calories)
                 except Exception:
                     df['calories'] = 0
+
+            # Parse power columns
+            for power_col in ['avg_power', 'max_power', 'normalized_power']:
+                if power_col in df.columns:
+                    try:
+                        df[power_col] = df[power_col].astype(str).str.replace(',', '.', regex=False).str.replace('--', '', regex=False)
+                        df[power_col] = pd.to_numeric(df[power_col], errors='coerce')
+                    except Exception:
+                        df[power_col] = np.nan
 
             # Filter running activities only if requested
             if filter_running_only and 'activity_type' in df.columns:
@@ -258,7 +276,8 @@ class GarminDataAnalyzer:
         except:
             return np.nan
     
-    def analyze_fitness(self, df: pd.DataFrame, max_hr: int = 185) -> dict:
+    def analyze_fitness(self, df: pd.DataFrame, max_hr: int = 185,
+                        resting_hr: int = 60, gender: str = 'male') -> dict:
         """
         Analyze training data to determine current fitness status.
         Analyzes ALL activities (running, cycling, etc.) for general fitness estimation.
@@ -266,6 +285,8 @@ class GarminDataAnalyzer:
         Args:
             df: DataFrame with training data (all activities)
             max_hr: User's maximum heart rate
+            resting_hr: Resting heart rate (default 60)
+            gender: Gender for TRIMP calculation ('male' or 'female')
 
         Returns:
             Dictionary with fitness metrics
@@ -349,7 +370,7 @@ class GarminDataAnalyzer:
 
             # Determine fitness level based on weekly training volume (duration + intensity)
             # Use a combination of duration and heart rate based training load
-            training_load = self._calculate_training_load(recent_df, max_hr)
+            training_load = self._calculate_training_load(recent_df, max_hr, resting_hr, gender)
 
             # Fitness level based on weekly training load and duration
             if avg_weekly_duration >= 420:  # 7+ hours/week
@@ -422,13 +443,17 @@ class GarminDataAnalyzer:
                 'weeks_analyzed': 0
             }
 
-    def _calculate_training_load(self, df: pd.DataFrame, max_hr: int) -> float:
+    def _calculate_training_load(self, df: pd.DataFrame, max_hr: int,
+                                   resting_hr: int = 60, gender: str = 'male') -> float:
         """
         Calculate simplified training load (TRIMP-like metric).
+        Uses Banister's TRIMP formula with gender-specific coefficients.
 
         Args:
             df: DataFrame with training data
             max_hr: Maximum heart rate
+            resting_hr: Resting heart rate (default 60)
+            gender: Gender for coefficient selection ('male' or 'female')
 
         Returns:
             Weekly training load in arbitrary units
@@ -436,29 +461,59 @@ class GarminDataAnalyzer:
         if len(df) == 0:
             return 0
 
+        # Validar que max_hr > resting_hr para evitar división por cero
+        hr_reserve_total = max_hr - resting_hr
+        if hr_reserve_total <= 0:
+            hr_reserve_total = 125  # Valor por defecto seguro (185 - 60)
+
         total_load = 0
+
+        # Coeficientes de Banister según género
+        if gender.lower() == 'female':
+            k_coefficient = 0.86  # Coeficiente multiplicador para mujeres
+            y_factor = 1.67      # Exponente para mujeres
+        else:
+            k_coefficient = 0.64  # Coeficiente multiplicador para hombres
+            y_factor = 1.92      # Exponente para hombres
 
         for _, row in df.iterrows():
             duration = row.get('duration_minutes', 30)  # Default 30 min if not available
+            if pd.isna(duration) or duration <= 0:
+                duration = 30
 
             if pd.notna(row.get('average_heart_rate')):
-                # Calculate intensity factor based on HR
+                # Calculate intensity factor based on HR using Banister formula
                 hr = row['average_heart_rate']
-                hr_reserve_pct = (hr - 60) / (max_hr - 60)  # Assume 60 resting HR
-                hr_reserve_pct = max(0, min(1, hr_reserve_pct))
+                hr_reserve_pct = (hr - resting_hr) / hr_reserve_total
+                hr_reserve_pct = max(0.0, min(1.0, hr_reserve_pct))
 
-                # Exponential weighting for higher intensities
-                intensity_factor = hr_reserve_pct * np.exp(1.92 * hr_reserve_pct)
+                # Fórmula TRIMP de Banister completa
+                intensity_factor = hr_reserve_pct * k_coefficient * np.exp(y_factor * hr_reserve_pct)
             else:
-                # Use distance as proxy for load if HR not available
-                distance = row.get('distance', 5)
-                intensity_factor = 0.7 + (distance / 20) * 0.3  # Scale based on distance
+                # Estimación mejorada sin HR basada en duración y distancia
+                distance = row.get('distance', 0)
+                if pd.isna(distance):
+                    distance = 0
+
+                # Estimar intensidad basada en velocidad si hay distancia
+                if distance > 0 and duration > 0:
+                    speed_kmh = distance / (duration / 60)  # km/h
+                    # Asumir intensidad moderada (~65% HRR) para velocidades típicas
+                    # Velocidad 8-12 km/h = intensidad moderada
+                    estimated_hr_pct = min(0.85, max(0.5, 0.4 + speed_kmh * 0.035))
+                    intensity_factor = estimated_hr_pct * k_coefficient * np.exp(y_factor * estimated_hr_pct)
+                else:
+                    # Sin datos suficientes, asumir intensidad baja-moderada
+                    intensity_factor = 0.5 * k_coefficient * np.exp(y_factor * 0.5)
 
             total_load += duration * intensity_factor
 
         # Calculate weeks in data
-        weeks = (df['date'].max() - df['date'].min()).days / 7
-        weeks = max(1, weeks)
+        if len(df) > 0:
+            date_range = (df['date'].max() - df['date'].min()).days
+            weeks = max(1, date_range / 7)
+        else:
+            weeks = 1
 
         return total_load / weeks
 
@@ -672,68 +727,173 @@ class GarminDataAnalyzer:
             return self._empty_fitness_score()
 
     def _calculate_trimp_row(self, row, max_hr: int, resting_hr: int, gender: str) -> float:
-        """Calcula TRIMP para una fila de datos."""
+        """
+        Calcula TRIMP (Training Impulse) para una fila de datos.
+        Usa la fórmula de Banister con coeficientes específicos por género.
+
+        Referencia: Banister EW (1991). Modeling elite athletic performance.
+        - Hombres: TRIMP = duración × HRreserve × 0.64 × e^(1.92 × HRreserve)
+        - Mujeres: TRIMP = duración × HRreserve × 0.86 × e^(1.67 × HRreserve)
+        """
         duration = row.get('duration_minutes', 30)
-        if pd.isna(duration):
+        if pd.isna(duration) or duration <= 0:
             duration = 30
+
+        # Validar que max_hr > resting_hr para evitar división por cero
+        hr_reserve_total = max_hr - resting_hr
+        if hr_reserve_total <= 0:
+            hr_reserve_total = 125  # Valor por defecto seguro (185 - 60)
+
+        # Coeficientes de Banister según género (CORREGIDO)
+        if gender.lower() == 'female':
+            k_coefficient = 0.86  # Coeficiente multiplicador para mujeres
+            y_factor = 1.67      # Exponente para mujeres
+        else:
+            k_coefficient = 0.64  # Coeficiente multiplicador para hombres
+            y_factor = 1.92      # Exponente para hombres
 
         if pd.notna(row.get('average_heart_rate')):
             hr = row['average_heart_rate']
-            # Calcular fracción de reserva de FC
-            hr_reserve = (hr - resting_hr) / (max_hr - resting_hr)
+            # Calcular fracción de reserva de FC (método Karvonen)
+            hr_reserve = (hr - resting_hr) / hr_reserve_total
             hr_reserve = max(0.0, min(1.0, hr_reserve))
 
-            # Factor de género (las mujeres tienen respuesta fisiológica ligeramente diferente)
-            if gender.lower() == 'female':
-                y_factor = 1.67
-            else:
-                y_factor = 1.92
-
-            # Fórmula TRIMP de Banister
-            trimp = duration * hr_reserve * 0.64 * np.exp(y_factor * hr_reserve)
+            # Fórmula TRIMP de Banister con coeficientes correctos
+            trimp = duration * hr_reserve * k_coefficient * np.exp(y_factor * hr_reserve)
         else:
-            # Estimar TRIMP basado en distancia si no hay FC
-            distance = row.get('distance', 5)
+            # Estimación mejorada sin HR basada en duración y distancia
+            distance = row.get('distance', 0)
             if pd.isna(distance):
-                distance = 5
-            trimp = duration * 0.5 + distance * 5  # Aproximación conservadora
+                distance = 0
+
+            # Estimar intensidad basada en velocidad si hay distancia
+            if distance > 0 and duration > 0:
+                speed_kmh = distance / (duration / 60)  # km/h
+                # Estimar %HRR basado en velocidad (modelo simplificado)
+                # Velocidad 6 km/h ≈ 50% HRR, 12 km/h ≈ 85% HRR
+                estimated_hr_pct = min(0.90, max(0.45, 0.35 + speed_kmh * 0.04))
+                trimp = duration * estimated_hr_pct * k_coefficient * np.exp(y_factor * estimated_hr_pct)
+            else:
+                # Sin datos suficientes, asumir intensidad moderada (~55% HRR)
+                estimated_hr_pct = 0.55
+                trimp = duration * estimated_hr_pct * k_coefficient * np.exp(y_factor * estimated_hr_pct)
 
         return trimp
 
     def _normalize_fitness_score(self, ctl: float, age: int, gender: str) -> float:
-        """Normaliza CTL a un score de 0-100."""
-        # Valores de referencia por edad y género
-        # Basados en estudios de atletas recreacionales
-        age_factor = 1.0 - (max(0, age - 25) * 0.005)  # Declive de 0.5% por año después de 25
-        gender_factor = 0.9 if gender.lower() == 'female' else 1.0
+        """
+        Normaliza CTL a un score de 0-100.
 
-        # CTL típico para diferentes niveles (ajustado por factores)
-        reference_ctl = 50 * age_factor * gender_factor  # CTL de referencia para score 50
+        Basado en valores de referencia de CTL para diferentes niveles de atletas:
+        - Principiante: CTL 10-25
+        - Recreacional: CTL 25-50
+        - Aficionado activo: CTL 50-80
+        - Competidor amateur: CTL 80-120
+        - Élite: CTL 120+
 
-        # Normalizar a escala 0-100 (usando función sigmoidea suave)
-        normalized = 100 / (1 + np.exp(-0.05 * (ctl - reference_ctl)))
+        La normalización usa una función logarítmica-lineal que es más realista
+        que una sigmoide pura, especialmente para valores bajos de CTL.
+        """
+        # Validar CTL
+        if pd.isna(ctl) or ctl < 0:
+            ctl = 0
+
+        # Factor de edad: declive fisiológico de ~0.7% por año después de 30
+        # Basado en estudios de VO2max y capacidad aeróbica
+        age_factor = 1.0 - (max(0, age - 30) * 0.007)
+        age_factor = max(0.65, age_factor)  # Mínimo 65% a edad avanzada
+
+        # NO penalizar por género - el CTL ya refleja la capacidad individual
+        # Las diferencias fisiológicas ya están capturadas en los coeficientes TRIMP
+
+        # Valores de referencia de CTL ajustados por edad
+        # CTL de 40 = score 50 para un adulto de 30 años
+        reference_ctl = 40 * age_factor
+
+        # Usar función de normalización híbrida:
+        # - Para CTL bajo (0-30): crecimiento más rápido
+        # - Para CTL medio (30-80): crecimiento lineal
+        # - Para CTL alto (80+): saturación gradual
+
+        if ctl <= 0:
+            normalized = 0
+        elif ctl <= reference_ctl * 0.5:
+            # Zona baja: crecimiento acelerado (0-25 score aprox)
+            normalized = 25 * (ctl / (reference_ctl * 0.5))
+        elif ctl <= reference_ctl * 1.5:
+            # Zona media: crecimiento lineal (25-65 score aprox)
+            normalized = 25 + 40 * ((ctl - reference_ctl * 0.5) / reference_ctl)
+        else:
+            # Zona alta: saturación logarítmica (65-100 score)
+            excess = ctl - reference_ctl * 1.5
+            # Usar logaritmo para saturación suave
+            normalized = 65 + 35 * (1 - np.exp(-excess / (reference_ctl * 1.5)))
+
         return min(100, max(0, normalized))
 
     def _get_population_percentile(self, fitness_score: float, age: int, gender: str) -> int:
-        """Calcula el percentil poblacional basado en fitness score."""
-        # Distribución aproximada basada en datos epidemiológicos
-        # La población general tiene fitness scores distribuidos normalmente
-        # con media ~40 y desviación estándar ~15
+        """
+        Calcula el percentil poblacional basado en fitness score.
 
-        # Ajustar por edad (la población general también declina con edad)
-        age_adjustment = max(0, (age - 35) * 0.3)
+        Usa la aproximación de Abramowitz y Stegun para la función error,
+        que tiene precisión de ~1.5×10^-7 (mucho mejor que la aproximación tanh).
+
+        Distribución basada en datos epidemiológicos de fitness poblacional:
+        - Media poblacional: ~35 (la mayoría de la población es sedentaria)
+        - Desviación estándar: ~18 (alta variabilidad)
+        """
+        # Validar fitness_score
+        if pd.isna(fitness_score):
+            fitness_score = 0
+
+        # Ajustar por edad: personas mayores con mismo score están mejor posicionadas
+        # ya que la población general también declina con edad
+        age_adjustment = max(0, (age - 35) * 0.4)
         adjusted_score = fitness_score + age_adjustment
 
-        # Calcular percentil usando distribución normal aproximada (sin scipy)
-        mean_pop = 40
-        std_pop = 15
+        # Parámetros de distribución poblacional
+        mean_pop = 35  # Media más baja (población general es sedentaria)
+        std_pop = 18   # Mayor variabilidad
 
-        # Aproximación de la CDF normal usando error function (disponible en numpy)
-        z = (adjusted_score - mean_pop) / (std_pop * np.sqrt(2))
-        # Usar aproximación de erf con numpy
-        # erf(x) ≈ tanh(x * (1.202 + 0.166 * x^2)) para buena precisión
-        erf_approx = np.tanh(z * (1.202 + 0.166 * z * z))
-        percentile = (1 + erf_approx) / 2 * 100
+        # Calcular z-score
+        z = (adjusted_score - mean_pop) / std_pop
+
+        # Aproximación de Abramowitz y Stegun para CDF normal
+        # Φ(z) = 1 - φ(z)(b1*t + b2*t² + b3*t³ + b4*t⁴ + b5*t⁵) para z >= 0
+        # donde t = 1/(1 + p*z), p = 0.2316419
+        # Precisión: |error| < 1.5×10^-7
+
+        def normal_cdf(x):
+            """Aproximación precisa de la CDF normal estándar."""
+            if x < -8:
+                return 0.0
+            if x > 8:
+                return 1.0
+
+            # Coeficientes de Abramowitz y Stegun
+            p = 0.2316419
+            b1 = 0.319381530
+            b2 = -0.356563782
+            b3 = 1.781477937
+            b4 = -1.821255978
+            b5 = 1.330274429
+
+            # Calcular para |x|
+            abs_x = abs(x)
+            t = 1.0 / (1.0 + p * abs_x)
+
+            # φ(x) = exp(-x²/2) / √(2π)
+            phi = np.exp(-0.5 * abs_x * abs_x) / np.sqrt(2 * np.pi)
+
+            # Aproximación polinomial
+            cdf_complement = phi * (b1*t + b2*t**2 + b3*t**3 + b4*t**4 + b5*t**5)
+
+            if x >= 0:
+                return 1.0 - cdf_complement
+            else:
+                return cdf_complement
+
+        percentile = normal_cdf(z) * 100
 
         return int(min(99, max(1, percentile)))
 
@@ -786,3 +946,563 @@ class GarminDataAnalyzer:
             'gender': 'male'
         }
 
+
+class PowerProfileAnalyzer:
+    """
+    Analiza el perfil de potencia del atleta basado en watts y watts/kg.
+
+    Utiliza las tablas de referencia de Coggan/Allen para clasificar el nivel
+    del ciclista basado en FTP (Functional Threshold Power) y potencia relativa.
+
+    Referencias:
+    - Allen & Coggan: "Training and Racing with a Power Meter"
+    - British Cycling Power Profile
+    """
+
+    # Tablas de referencia de potencia por categoría (watts/kg para FTP de 60 min)
+    # Basadas en Allen & Coggan Power Profile
+    POWER_CATEGORIES_MALE = {
+        'World Class': {'min_wpkg': 5.80, 'description': 'Profesional World Tour'},
+        'Exceptional': {'min_wpkg': 5.25, 'description': 'Profesional Continental'},
+        'Excellent': {'min_wpkg': 4.70, 'description': 'Elite Amateur / Cat 1'},
+        'Very Good': {'min_wpkg': 4.15, 'description': 'Cat 2 / Competidor Serio'},
+        'Good': {'min_wpkg': 3.60, 'description': 'Cat 3 / Aficionado Activo'},
+        'Moderate': {'min_wpkg': 3.05, 'description': 'Cat 4 / Recreacional Fit'},
+        'Fair': {'min_wpkg': 2.50, 'description': 'Cat 5 / Principiante'},
+        'Untrained': {'min_wpkg': 0.0, 'description': 'Sin entrenamiento específico'}
+    }
+
+    POWER_CATEGORIES_FEMALE = {
+        'World Class': {'min_wpkg': 5.10, 'description': 'Profesional World Tour'},
+        'Exceptional': {'min_wpkg': 4.60, 'description': 'Profesional Continental'},
+        'Excellent': {'min_wpkg': 4.10, 'description': 'Elite Amateur / Cat 1'},
+        'Very Good': {'min_wpkg': 3.60, 'description': 'Cat 2 / Competidor Serio'},
+        'Good': {'min_wpkg': 3.15, 'description': 'Cat 3 / Aficionado Activo'},
+        'Moderate': {'min_wpkg': 2.70, 'description': 'Cat 4 / Recreacional Fit'},
+        'Fair': {'min_wpkg': 2.20, 'description': 'Cat 5 / Principiante'},
+        'Untrained': {'min_wpkg': 0.0, 'description': 'Sin entrenamiento específico'}
+    }
+
+    # Tablas de potencia absoluta por duración (5s, 1min, 5min, FTP)
+    # Percentiles para hombres (watts)
+    POWER_PERCENTILES_MALE = {
+        '5s': [(1800, 99), (1500, 95), (1200, 85), (1000, 70), (800, 50), (600, 30), (400, 10)],
+        '1min': [(700, 99), (600, 95), (500, 85), (420, 70), (350, 50), (280, 30), (200, 10)],
+        '5min': [(450, 99), (400, 95), (360, 85), (320, 70), (280, 50), (240, 30), (180, 10)],
+        'ftp': [(400, 99), (350, 95), (310, 85), (275, 70), (240, 50), (200, 30), (150, 10)]
+    }
+
+    # Percentiles para mujeres (watts)
+    POWER_PERCENTILES_FEMALE = {
+        '5s': [(1200, 99), (1000, 95), (850, 85), (700, 70), (550, 50), (420, 30), (300, 10)],
+        '1min': [(500, 99), (430, 95), (370, 85), (310, 70), (260, 50), (210, 30), (150, 10)],
+        '5min': [(330, 99), (290, 95), (260, 85), (230, 70), (200, 50), (170, 30), (130, 10)],
+        'ftp': [(300, 99), (265, 95), (235, 85), (205, 70), (180, 50), (150, 30), (110, 10)]
+    }
+
+    def __init__(self, weight: float, gender: str = 'male', age: int = 35):
+        """
+        Inicializa el analizador de perfil de potencia.
+
+        Args:
+            weight: Peso del atleta en kg
+            gender: Género ('male' o 'female')
+            age: Edad del atleta
+        """
+        self.weight = max(40, min(150, weight))  # Validar peso razonable
+        self.gender = gender.lower()
+        self.age = age
+
+        # Seleccionar tablas según género
+        if self.gender == 'female':
+            self.power_categories = self.POWER_CATEGORIES_FEMALE
+            self.power_percentiles = self.POWER_PERCENTILES_FEMALE
+        else:
+            self.power_categories = self.POWER_CATEGORIES_MALE
+            self.power_percentiles = self.POWER_PERCENTILES_MALE
+
+    def extract_power_from_dataframe(self, df: pd.DataFrame) -> dict:
+        """
+        Extrae datos de potencia de un DataFrame de Garmin.
+
+        Analiza las actividades de ciclismo para extraer:
+        - FTP estimado (basado en potencia normalizada o promedio de esfuerzos largos)
+        - Potencia máxima (sprint)
+        - Historial de potencia por actividad
+
+        Args:
+            df: DataFrame con datos de Garmin
+
+        Returns:
+            Diccionario con datos de potencia extraídos
+        """
+        result = {
+            'has_power_data': False,
+            'total_activities_with_power': 0,
+            'cycling_activities': 0,
+            'estimated_ftp': 0,
+            'max_power': 0,
+            'avg_power_all': 0,
+            'power_history': [],
+            'best_efforts': {
+                '5s': 0,
+                '1min': 0,
+                '5min': 0,
+                'ftp': 0
+            }
+        }
+
+        if df is None or df.empty:
+            return result
+
+        # Verificar si hay columnas de potencia
+        power_cols = ['avg_power', 'max_power', 'normalized_power']
+        available_power_cols = [col for col in power_cols if col in df.columns]
+
+        if not available_power_cols:
+            return result
+
+        # Filtrar actividades de ciclismo
+        cycling_keywords = ['cycling', 'biking', 'bike', 'ciclismo', 'bici', 'road', 'mtb',
+                           'indoor_cycling', 'virtual_ride', 'spinning', 'indoor cycling']
+
+        if 'activity_type' in df.columns:
+            cycling_mask = df['activity_type'].astype(str).str.lower().str.contains(
+                '|'.join(cycling_keywords), na=False
+            )
+            cycling_df = df[cycling_mask].copy()
+        else:
+            # Si no hay tipo de actividad, usar todas las que tengan potencia
+            cycling_df = df.copy()
+
+        # Filtrar solo actividades con datos de potencia válidos
+        if 'avg_power' in cycling_df.columns:
+            cycling_df = cycling_df[cycling_df['avg_power'].notna() & (cycling_df['avg_power'] > 0)]
+
+        if cycling_df.empty:
+            return result
+
+        result['has_power_data'] = True
+        result['total_activities_with_power'] = len(cycling_df)
+        result['cycling_activities'] = len(cycling_df)
+
+        # Extraer potencia máxima
+        if 'max_power' in cycling_df.columns:
+            max_power_values = cycling_df['max_power'].dropna()
+            if not max_power_values.empty:
+                result['max_power'] = float(max_power_values.max())
+                # Estimar potencia de 5s como el máximo registrado
+                result['best_efforts']['5s'] = result['max_power']
+
+        # Potencia promedio general
+        if 'avg_power' in cycling_df.columns:
+            avg_power_values = cycling_df['avg_power'].dropna()
+            if not avg_power_values.empty:
+                result['avg_power_all'] = float(avg_power_values.mean())
+
+        # Estimar FTP
+        # Prioridad: normalized_power de actividades largas > avg_power de actividades largas
+        if 'duration_minutes' in cycling_df.columns:
+            # Actividades de más de 40 minutos
+            long_activities = cycling_df[cycling_df['duration_minutes'] >= 40]
+
+            if not long_activities.empty:
+                if 'normalized_power' in long_activities.columns:
+                    np_values = long_activities['normalized_power'].dropna()
+                    if not np_values.empty and np_values.max() > 0:
+                        # FTP ≈ 95% del mejor NP en actividades largas
+                        result['estimated_ftp'] = float(np_values.max() * 0.95)
+                        result['best_efforts']['ftp'] = result['estimated_ftp']
+
+                if result['estimated_ftp'] == 0 and 'avg_power' in long_activities.columns:
+                    # Usar el mejor promedio de potencia en actividades largas
+                    avg_values = long_activities['avg_power'].dropna()
+                    if not avg_values.empty:
+                        # El mejor esfuerzo sostenido es aproximadamente el FTP
+                        result['estimated_ftp'] = float(avg_values.max())
+                        result['best_efforts']['ftp'] = result['estimated_ftp']
+
+                # Estimar potencia de 5 minutos (110-120% del FTP típicamente)
+                if result['estimated_ftp'] > 0:
+                    result['best_efforts']['5min'] = result['estimated_ftp'] * 1.15
+                    result['best_efforts']['1min'] = result['estimated_ftp'] * 1.50
+
+        # Si no hay actividades largas, estimar FTP desde el promedio
+        if result['estimated_ftp'] == 0 and result['avg_power_all'] > 0:
+            # Estimación conservadora: FTP ≈ avg_power * 1.05 (asumiendo entrenamientos variados)
+            result['estimated_ftp'] = result['avg_power_all'] * 1.05
+            result['best_efforts']['ftp'] = result['estimated_ftp']
+
+            if result['max_power'] > 0:
+                # Estimar otros esfuerzos desde el máximo
+                result['best_efforts']['5s'] = result['max_power']
+                result['best_efforts']['1min'] = result['max_power'] * 0.55
+                result['best_efforts']['5min'] = result['max_power'] * 0.40
+
+        # Crear historial de potencia
+        if 'date' in cycling_df.columns and 'avg_power' in cycling_df.columns:
+            for _, row in cycling_df.iterrows():
+                if pd.notna(row.get('avg_power')) and row['avg_power'] > 0:
+                    entry = {
+                        'date': row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date']),
+                        'avg_power': float(row['avg_power']),
+                        'max_power': float(row.get('max_power', 0)) if pd.notna(row.get('max_power')) else 0,
+                        'normalized_power': float(row.get('normalized_power', 0)) if pd.notna(row.get('normalized_power')) else 0,
+                        'duration_minutes': float(row.get('duration_minutes', 0)) if pd.notna(row.get('duration_minutes')) else 0
+                    }
+                    if 'activity_type' in row:
+                        entry['activity_type'] = str(row['activity_type'])
+                    result['power_history'].append(entry)
+
+        # Ordenar historial por fecha
+        result['power_history'] = sorted(result['power_history'], key=lambda x: x['date'])
+
+        return result
+
+    def analyze_ftp(self, ftp_watts: float) -> dict:
+        """
+        Analiza el FTP (Functional Threshold Power) del atleta.
+
+        Args:
+            ftp_watts: FTP en watts (potencia sostenible durante ~1 hora)
+
+        Returns:
+            Diccionario con análisis completo del FTP
+        """
+        if ftp_watts <= 0:
+            return self._empty_power_analysis()
+
+        # Calcular watts/kg
+        watts_per_kg = ftp_watts / self.weight
+
+        # Determinar categoría
+        category = self._get_power_category(watts_per_kg)
+
+        # Calcular percentil
+        percentile = self._calculate_power_percentile(ftp_watts, 'ftp')
+
+        # Calcular zonas de potencia (basadas en FTP)
+        power_zones = self._calculate_power_zones(ftp_watts)
+
+        # Estimar VO2max desde FTP (aproximación)
+        estimated_vo2max = self._estimate_vo2max_from_ftp(watts_per_kg)
+
+        # Factor de edad (la potencia máxima declina ~1% por año después de 35)
+        age_adjusted_percentile = self._adjust_percentile_for_age(percentile)
+
+        return {
+            'ftp_watts': round(ftp_watts, 0),
+            'watts_per_kg': round(watts_per_kg, 2),
+            'category': category['name'],
+            'category_description': category['description'],
+            'percentile': percentile,
+            'age_adjusted_percentile': age_adjusted_percentile,
+            'estimated_vo2max': round(estimated_vo2max, 1),
+            'power_zones': power_zones,
+            'next_category': self._get_next_category(watts_per_kg),
+            'watts_to_next': self._watts_to_next_category(watts_per_kg),
+            'training_recommendations': self._get_training_recommendations(category['name'])
+        }
+
+    def analyze_power_profile(self, power_5s: float = 0, power_1min: float = 0,
+                               power_5min: float = 0, ftp: float = 0) -> dict:
+        """
+        Analiza el perfil de potencia completo del atleta.
+
+        Args:
+            power_5s: Potencia máxima de 5 segundos (sprint)
+            power_1min: Potencia máxima de 1 minuto (anaeróbico)
+            power_5min: Potencia máxima de 5 minutos (VO2max)
+            ftp: Potencia umbral funcional (~1 hora)
+
+        Returns:
+            Diccionario con perfil de potencia completo
+        """
+        profile = {
+            'weight': self.weight,
+            'gender': self.gender,
+            'age': self.age,
+            'powers': {},
+            'strengths': [],
+            'weaknesses': [],
+            'rider_type': 'Desconocido',
+            'overall_score': 0
+        }
+
+        powers = {
+            '5s': power_5s,
+            '1min': power_1min,
+            '5min': power_5min,
+            'ftp': ftp
+        }
+
+        percentiles = []
+        wpkg_values = {}
+
+        for duration, watts in powers.items():
+            if watts > 0:
+                wpkg = watts / self.weight
+                wpkg_values[duration] = wpkg
+                pct = self._calculate_power_percentile(watts, duration)
+                percentiles.append(pct)
+
+                profile['powers'][duration] = {
+                    'watts': round(watts, 0),
+                    'watts_per_kg': round(wpkg, 2),
+                    'percentile': pct
+                }
+
+        # Calcular score general
+        if percentiles:
+            profile['overall_score'] = round(sum(percentiles) / len(percentiles), 0)
+
+        # Determinar tipo de ciclista basado en fortalezas relativas
+        if len(wpkg_values) >= 3:
+            profile['rider_type'] = self._determine_rider_type(wpkg_values)
+            profile['strengths'], profile['weaknesses'] = self._analyze_strengths_weaknesses(
+                profile['powers']
+            )
+
+        # Añadir análisis FTP si está disponible
+        if ftp > 0:
+            profile['ftp_analysis'] = self.analyze_ftp(ftp)
+
+        return profile
+
+    def _get_power_category(self, watts_per_kg: float) -> dict:
+        """Determina la categoría de potencia basada en watts/kg."""
+        for name, data in self.power_categories.items():
+            if watts_per_kg >= data['min_wpkg']:
+                return {'name': name, 'description': data['description']}
+        return {'name': 'Untrained', 'description': 'Sin entrenamiento específico'}
+
+    def _get_next_category(self, watts_per_kg: float) -> str:
+        """Obtiene la siguiente categoría a alcanzar."""
+        categories = list(self.power_categories.items())
+        for i, (name, data) in enumerate(categories):
+            if watts_per_kg >= data['min_wpkg']:
+                if i > 0:
+                    return categories[i-1][0]
+                return "Ya estás en la categoría más alta"
+        return categories[-2][0] if len(categories) > 1 else "Fair"
+
+    def _watts_to_next_category(self, watts_per_kg: float) -> float:
+        """Calcula los watts/kg necesarios para la siguiente categoría."""
+        categories = list(self.power_categories.items())
+        for i, (name, data) in enumerate(categories):
+            if watts_per_kg >= data['min_wpkg']:
+                if i > 0:
+                    next_wpkg = categories[i-1][1]['min_wpkg']
+                    return round((next_wpkg - watts_per_kg) * self.weight, 0)
+                return 0
+        return round((categories[-2][1]['min_wpkg'] - watts_per_kg) * self.weight, 0)
+
+    def _calculate_power_percentile(self, watts: float, duration: str) -> int:
+        """Calcula el percentil para una potencia dada."""
+        if duration not in self.power_percentiles:
+            return 50
+
+        table = self.power_percentiles[duration]
+
+        # Interpolar percentil
+        for i, (power, pct) in enumerate(table):
+            if watts >= power:
+                if i == 0:
+                    return min(99, pct + int((watts - power) / 50))
+                # Interpolar entre este y el anterior
+                prev_power, prev_pct = table[i-1]
+                ratio = (watts - power) / (prev_power - power)
+                return int(pct + ratio * (prev_pct - pct))
+
+        # Por debajo del mínimo
+        return max(1, table[-1][1] - 5)
+
+    def _calculate_power_zones(self, ftp: float) -> dict:
+        """
+        Calcula las zonas de potencia basadas en FTP.
+        Modelo de 7 zonas de Coggan.
+        """
+        return {
+            'Z1 - Recuperación Activa': {
+                'min': 0,
+                'max': round(ftp * 0.55),
+                'description': 'Recuperación, calentamiento'
+            },
+            'Z2 - Resistencia': {
+                'min': round(ftp * 0.56),
+                'max': round(ftp * 0.75),
+                'description': 'Entrenamiento de base aeróbica'
+            },
+            'Z3 - Tempo': {
+                'min': round(ftp * 0.76),
+                'max': round(ftp * 0.90),
+                'description': 'Ritmo sostenido, "sweetspot"'
+            },
+            'Z4 - Umbral': {
+                'min': round(ftp * 0.91),
+                'max': round(ftp * 1.05),
+                'description': 'Esfuerzo de umbral, ~1 hora'
+            },
+            'Z5 - VO2max': {
+                'min': round(ftp * 1.06),
+                'max': round(ftp * 1.20),
+                'description': 'Intervalos de 3-8 minutos'
+            },
+            'Z6 - Capacidad Anaeróbica': {
+                'min': round(ftp * 1.21),
+                'max': round(ftp * 1.50),
+                'description': 'Intervalos de 30s-2min'
+            },
+            'Z7 - Potencia Neuromuscular': {
+                'min': round(ftp * 1.51),
+                'max': 9999,
+                'description': 'Sprints máximos <30s'
+            }
+        }
+
+    def _estimate_vo2max_from_ftp(self, watts_per_kg: float) -> float:
+        """
+        Estima VO2max desde watts/kg de FTP.
+        Basado en la relación: VO2max ≈ (watts/kg × 10.8) + 7
+        """
+        # Fórmula aproximada basada en estudios de fisiología del ejercicio
+        vo2max = (watts_per_kg * 10.8) + 7
+
+        # Ajustar por género (las mujeres tienen ~10% menos VO2max para mismo w/kg)
+        if self.gender == 'female':
+            vo2max *= 0.90
+
+        return max(20, min(90, vo2max))
+
+    def _adjust_percentile_for_age(self, percentile: int) -> int:
+        """Ajusta el percentil considerando la edad."""
+        # La potencia máxima declina ~1% por año después de 35
+        if self.age > 35:
+            age_bonus = min(15, (self.age - 35) * 0.5)
+            return min(99, int(percentile + age_bonus))
+        return percentile
+
+    def _determine_rider_type(self, wpkg_values: dict) -> str:
+        """Determina el tipo de ciclista basado en el perfil de potencia."""
+        if len(wpkg_values) < 3:
+            return "Datos insuficientes"
+
+        # Normalizar valores relativos al FTP
+        ftp_wpkg = wpkg_values.get('ftp', 0)
+        if ftp_wpkg <= 0:
+            return "Necesita datos de FTP"
+
+        ratios = {}
+        if '5s' in wpkg_values:
+            ratios['sprint'] = wpkg_values['5s'] / ftp_wpkg
+        if '1min' in wpkg_values:
+            ratios['anaerobic'] = wpkg_values['1min'] / ftp_wpkg
+        if '5min' in wpkg_values:
+            ratios['vo2max'] = wpkg_values['5min'] / ftp_wpkg
+
+        # Clasificar tipo de ciclista
+        sprint_ratio = ratios.get('sprint', 0)
+        anaerobic_ratio = ratios.get('anaerobic', 0)
+        vo2max_ratio = ratios.get('vo2max', 0)
+
+        if sprint_ratio > 5.5:
+            return "Sprinter"
+        elif anaerobic_ratio > 2.0 and sprint_ratio > 4.5:
+            return "Sprinter/Puncher"
+        elif vo2max_ratio > 1.25 and anaerobic_ratio > 1.8:
+            return "Puncher"
+        elif vo2max_ratio > 1.20:
+            return "Escalador/Atacante"
+        elif ftp_wpkg > 4.0 and vo2max_ratio < 1.15:
+            return "Rodador/Contrarrelojista"
+        elif ftp_wpkg > 3.5:
+            return "All-Rounder"
+        else:
+            return "En desarrollo"
+
+    def _analyze_strengths_weaknesses(self, powers: dict) -> tuple:
+        """Analiza fortalezas y debilidades del perfil."""
+        strengths = []
+        weaknesses = []
+
+        if not powers:
+            return strengths, weaknesses
+
+        # Ordenar por percentil
+        sorted_powers = sorted(powers.items(), key=lambda x: x[1].get('percentile', 0), reverse=True)
+
+        for duration, data in sorted_powers[:2]:
+            pct = data.get('percentile', 0)
+            if pct >= 70:
+                duration_names = {'5s': 'Sprint', '1min': 'Anaeróbico', '5min': 'VO2max', 'ftp': 'Resistencia'}
+                strengths.append(duration_names.get(duration, duration))
+
+        for duration, data in sorted_powers[-2:]:
+            pct = data.get('percentile', 0)
+            if pct < 50:
+                duration_names = {'5s': 'Sprint', '1min': 'Anaeróbico', '5min': 'VO2max', 'ftp': 'Resistencia'}
+                weaknesses.append(duration_names.get(duration, duration))
+
+        return strengths, weaknesses
+
+    def _get_training_recommendations(self, category: str) -> list:
+        """Genera recomendaciones de entrenamiento basadas en la categoría."""
+        recommendations = {
+            'Untrained': [
+                "Comenzar con 3-4 sesiones semanales de 30-60 minutos",
+                "Enfocarse en construir base aeróbica (Z2)",
+                "Incluir 1 sesión semanal de intervalos suaves"
+            ],
+            'Fair': [
+                "Aumentar volumen gradualmente a 5-8 horas semanales",
+                "Introducir intervalos de tempo (Z3) 1-2 veces por semana",
+                "Trabajar en técnica de pedaleo y cadencia"
+            ],
+            'Moderate': [
+                "Mantener 8-12 horas semanales de entrenamiento",
+                "Incluir trabajo de umbral (Z4) 2 veces por semana",
+                "Añadir intervalos de VO2max (Z5) semanalmente"
+            ],
+            'Good': [
+                "Periodizar el entrenamiento con bloques específicos",
+                "Incluir trabajo de fuerza en gimnasio",
+                "Optimizar nutrición y recuperación"
+            ],
+            'Very Good': [
+                "Considerar entrenamiento con coach certificado",
+                "Análisis detallado de datos de potencia",
+                "Trabajo específico en debilidades del perfil"
+            ],
+            'Excellent': [
+                "Entrenamiento altamente estructurado y periodizado",
+                "Campos de entrenamiento y competiciones regulares",
+                "Optimización de todos los aspectos del rendimiento"
+            ],
+            'Exceptional': [
+                "Entrenamiento profesional con equipo de soporte",
+                "Análisis biomecánico y aerodinámico",
+                "Gestión de carga y recuperación avanzada"
+            ],
+            'World Class': [
+                "Mantener consistencia en el entrenamiento",
+                "Gestión de calendario de competiciones",
+                "Optimización marginal de todos los factores"
+            ]
+        }
+        return recommendations.get(category, recommendations['Moderate'])
+
+    def _empty_power_analysis(self) -> dict:
+        """Devuelve un análisis vacío."""
+        return {
+            'ftp_watts': 0,
+            'watts_per_kg': 0,
+            'category': 'Sin datos',
+            'category_description': 'Introduce tu FTP para analizar',
+            'percentile': 0,
+            'age_adjusted_percentile': 0,
+            'estimated_vo2max': 0,
+            'power_zones': {},
+            'next_category': '',
+            'watts_to_next': 0,
+            'training_recommendations': []
+        }

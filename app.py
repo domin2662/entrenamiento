@@ -17,7 +17,7 @@ import zipfile
 # Import local modules
 from training_zones import TrainingZones
 from plan_generator import TrainingPlanGenerator
-from garmin_analyzer import GarminDataAnalyzer
+from garmin_analyzer import GarminDataAnalyzer, PowerProfileAnalyzer
 from garmin_fit_exporter import GarminFitExporter
 from calendar_view import TrainingCalendarView
 from pdf_exporter import TrainingPlanPDFExporter
@@ -140,10 +140,11 @@ def main():
         training_days_per_week = st.slider("Días de Entrenamiento por Semana", min_value=3, max_value=7, value=4)
 
     # Main content area
-    tab1, tab2, tab2b, tab3, tab4, tab4b, tab5 = st.tabs([
+    tab1, tab2, tab2b, tab2c, tab3, tab4, tab4b, tab5 = st.tabs([
         "📁 Subir Datos",
         "📈 Análisis de Forma",
         "🏆 Fitness Score",
+        "⚡ Power Profile",
         "🎯 Zonas de Entrenamiento",
         "📅 Plan de Entrenamiento",
         "📆 Calendario Interactivo",
@@ -194,7 +195,9 @@ def main():
                 st.dataframe(df.head(10), use_container_width=True)
 
                 # Analyze fitness
-                st.session_state.fitness_status = analyzer.analyze_fitness(df, max_hr)
+                st.session_state.fitness_status = analyzer.analyze_fitness(
+                    df, max_hr=max_hr, resting_hr=resting_hr, gender=gender
+                )
 
                 # Calculate fitness score with TRIMP
                 st.session_state.fitness_score = analyzer.calculate_fitness_score(
@@ -482,6 +485,369 @@ def main():
                 """)
         else:
             st.warning("⚠️ Por favor sube los datos de Garmin en la pestaña 'Subir Datos' primero para ver tu Fitness Score")
+
+    # Tab 2c: Power Profile (Watts/kg)
+    with tab2c:
+        st.header("⚡ Power Profile - Análisis de Potencia")
+        st.markdown("""
+        Evalúa tu nivel de ciclismo basado en tu potencia (watts) y potencia relativa (watts/kg).
+        Basado en las tablas de referencia de **Coggan/Allen** utilizadas mundialmente.
+        """)
+
+        # Crear analizador de potencia
+        power_analyzer = PowerProfileAnalyzer(weight=weight, gender=gender, age=age)
+
+        # Intentar extraer datos de potencia del CSV cargado
+        power_from_csv = None
+        if st.session_state.garmin_data is not None:
+            power_from_csv = power_analyzer.extract_power_from_dataframe(st.session_state.garmin_data)
+
+        # Mostrar datos detectados del CSV
+        if power_from_csv and power_from_csv['has_power_data']:
+            st.success(f"✅ **Datos de potencia detectados en tu historial de Garmin**")
+
+            col_csv1, col_csv2, col_csv3 = st.columns(3)
+            with col_csv1:
+                st.metric("Actividades con potencia", power_from_csv['total_activities_with_power'])
+            with col_csv2:
+                st.metric("FTP Estimado", f"{power_from_csv['estimated_ftp']:.0f} W")
+            with col_csv3:
+                st.metric("Potencia Máxima", f"{power_from_csv['max_power']:.0f} W")
+
+            # Usar valores del CSV como defaults
+            default_ftp = int(power_from_csv['estimated_ftp']) if power_from_csv['estimated_ftp'] > 0 else 200
+            default_5s = int(power_from_csv['best_efforts']['5s']) if power_from_csv['best_efforts']['5s'] > 0 else 0
+            default_1min = int(power_from_csv['best_efforts']['1min']) if power_from_csv['best_efforts']['1min'] > 0 else 0
+            default_5min = int(power_from_csv['best_efforts']['5min']) if power_from_csv['best_efforts']['5min'] > 0 else 0
+
+            st.info("💡 Los valores se han pre-rellenado con los datos de tu historial. Puedes ajustarlos si conoces tus valores exactos.")
+        else:
+            default_ftp = 200
+            default_5s = 0
+            default_1min = 0
+            default_5min = 0
+            if st.session_state.garmin_data is not None:
+                st.warning("⚠️ No se encontraron datos de potencia en tu historial de Garmin. Introduce los valores manualmente.")
+            else:
+                st.info("💡 Sube tu historial de Garmin en la pestaña 'Subir Datos' para detectar automáticamente los datos de potencia, o introduce los valores manualmente.")
+
+        st.divider()
+
+        # Inputs de potencia
+        col_power1, col_power2 = st.columns(2)
+
+        with col_power1:
+            st.subheader("📊 Datos de Potencia")
+            ftp_input = st.number_input(
+                "FTP (Functional Threshold Power) en watts",
+                min_value=0, max_value=600, value=default_ftp,
+                help="Potencia que puedes mantener durante ~1 hora. Si no lo conoces, usa el 95% de tu potencia media en un test de 20 minutos."
+            )
+
+            power_5s = st.number_input(
+                "Potencia máxima 5 segundos (Sprint)",
+                min_value=0, max_value=2500, value=default_5s,
+                help="Tu potencia máxima en un sprint de 5 segundos"
+            )
+
+            power_1min = st.number_input(
+                "Potencia máxima 1 minuto",
+                min_value=0, max_value=1000, value=default_1min,
+                help="Tu potencia máxima sostenida durante 1 minuto"
+            )
+
+            power_5min = st.number_input(
+                "Potencia máxima 5 minutos",
+                min_value=0, max_value=600, value=default_5min,
+                help="Tu potencia máxima sostenida durante 5 minutos (esfuerzo VO2max)"
+            )
+
+        with col_power2:
+            st.subheader("⚙️ Configuración")
+            st.info(f"**Peso actual:** {weight} kg (configurado en la barra lateral)")
+            st.info(f"**Género:** {'Masculino' if gender == 'male' else 'Femenino'}")
+            st.info(f"**Edad:** {age} años")
+
+            # Mostrar historial de potencia si existe
+            if power_from_csv and power_from_csv['power_history']:
+                with st.expander("📈 Ver historial de potencia"):
+                    history_df = pd.DataFrame(power_from_csv['power_history'])
+                    if not history_df.empty:
+                        # Mostrar últimas 10 actividades
+                        st.dataframe(history_df.tail(10)[['date', 'avg_power', 'max_power', 'duration_minutes']],
+                                    use_container_width=True)
+
+        # Analizar potencia
+        if ftp_input > 0:
+            # Análisis FTP
+            ftp_analysis = power_analyzer.analyze_ftp(ftp_input)
+
+            # Análisis de perfil completo si hay más datos
+            if power_5s > 0 or power_1min > 0 or power_5min > 0:
+                full_profile = power_analyzer.analyze_power_profile(
+                    power_5s=power_5s,
+                    power_1min=power_1min,
+                    power_5min=power_5min,
+                    ftp=ftp_input
+                )
+            else:
+                full_profile = None
+
+            # Mostrar resultados principales
+            st.divider()
+            st.subheader("🏆 Tu Nivel de Potencia")
+
+            col_res1, col_res2, col_res3 = st.columns(3)
+
+            with col_res1:
+                # Gauge de watts/kg
+                fig_wpkg = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=ftp_analysis['watts_per_kg'],
+                    number={'suffix': " w/kg", 'font': {'size': 40}},
+                    title={'text': "Potencia Relativa (FTP)", 'font': {'size': 18}},
+                    gauge={
+                        'axis': {'range': [0, 7], 'tickwidth': 1},
+                        'bar': {'color': "#FF6B00"},
+                        'steps': [
+                            {'range': [0, 2.5], 'color': "#ffebee"},
+                            {'range': [2.5, 3.5], 'color': "#fff3e0"},
+                            {'range': [3.5, 4.5], 'color': "#e8f5e9"},
+                            {'range': [4.5, 5.5], 'color': "#e3f2fd"},
+                            {'range': [5.5, 7], 'color': "#f3e5f5"}
+                        ],
+                        'threshold': {
+                            'line': {'color': "red", 'width': 4},
+                            'thickness': 0.75,
+                            'value': ftp_analysis['watts_per_kg']
+                        }
+                    }
+                ))
+                fig_wpkg.update_layout(height=280)
+                st.plotly_chart(fig_wpkg, use_container_width=True)
+
+            with col_res2:
+                st.metric("FTP Absoluto", f"{ftp_analysis['ftp_watts']:.0f} W")
+                st.metric("Categoría", ftp_analysis['category'])
+                st.info(f"**{ftp_analysis['category_description']}**")
+
+                if ftp_analysis['watts_to_next'] > 0:
+                    st.caption(f"📈 Necesitas **+{ftp_analysis['watts_to_next']:.0f}W** para alcanzar '{ftp_analysis['next_category']}'")
+
+            with col_res3:
+                st.metric("Percentil", f"{ftp_analysis['percentile']}%")
+                st.metric("Percentil Ajustado por Edad", f"{ftp_analysis['age_adjusted_percentile']}%")
+                st.metric("VO2max Estimado", f"{ftp_analysis['estimated_vo2max']:.1f} ml/kg/min")
+
+            # Zonas de potencia
+            st.divider()
+            st.subheader("🎯 Zonas de Potencia (Modelo Coggan)")
+
+            zones_data = ftp_analysis['power_zones']
+            zone_colors_power = ['#4CAF50', '#8BC34A', '#CDDC39', '#FFC107', '#FF9800', '#FF5722', '#F44336']
+
+            # Crear gráfico de barras para zonas
+            fig_zones = go.Figure()
+
+            for i, (zone_name, zone_data) in enumerate(zones_data.items()):
+                max_val = min(zone_data['max'], ftp_input * 2)  # Limitar para visualización
+                fig_zones.add_trace(go.Bar(
+                    name=zone_name,
+                    x=[zone_name.split(' - ')[0]],
+                    y=[max_val - zone_data['min']],
+                    base=zone_data['min'],
+                    marker_color=zone_colors_power[i],
+                    text=f"{zone_data['min']}-{max_val}W",
+                    textposition='inside',
+                    hovertemplate=f"<b>{zone_name}</b><br>{zone_data['min']}-{max_val}W<br>{zone_data['description']}<extra></extra>"
+                ))
+
+            fig_zones.update_layout(
+                title="Zonas de Potencia basadas en tu FTP",
+                yaxis_title="Potencia (watts)",
+                height=350,
+                showlegend=False,
+                barmode='stack'
+            )
+            st.plotly_chart(fig_zones, use_container_width=True)
+
+            # Tabla de zonas
+            with st.expander("📋 Ver tabla detallada de zonas"):
+                zones_table = []
+                for zone_name, zone_data in zones_data.items():
+                    max_display = zone_data['max'] if zone_data['max'] < 9999 else "Máx"
+                    zones_table.append({
+                        'Zona': zone_name,
+                        'Rango (W)': f"{zone_data['min']} - {max_display}",
+                        'Descripción': zone_data['description']
+                    })
+                st.table(pd.DataFrame(zones_table))
+
+            # Perfil completo si hay datos adicionales
+            if full_profile and len(full_profile.get('powers', {})) > 1:
+                st.divider()
+                st.subheader("📊 Perfil de Potencia Completo")
+
+                col_profile1, col_profile2 = st.columns([2, 1])
+
+                with col_profile1:
+                    # Gráfico radar del perfil
+                    powers = full_profile['powers']
+                    categories = []
+                    values = []
+
+                    duration_labels = {'5s': 'Sprint (5s)', '1min': 'Anaeróbico (1min)',
+                                      '5min': 'VO2max (5min)', 'ftp': 'FTP (60min)'}
+
+                    for duration in ['5s', '1min', '5min', 'ftp']:
+                        if duration in powers:
+                            categories.append(duration_labels[duration])
+                            values.append(powers[duration]['percentile'])
+
+                    if len(categories) >= 3:
+                        fig_radar = go.Figure()
+
+                        fig_radar.add_trace(go.Scatterpolar(
+                            r=values + [values[0]],  # Cerrar el polígono
+                            theta=categories + [categories[0]],
+                            fill='toself',
+                            fillcolor='rgba(255, 107, 0, 0.3)',
+                            line=dict(color='#FF6B00', width=2),
+                            name='Tu perfil'
+                        ))
+
+                        # Añadir referencia de percentil 50
+                        fig_radar.add_trace(go.Scatterpolar(
+                            r=[50] * (len(categories) + 1),
+                            theta=categories + [categories[0]],
+                            line=dict(color='gray', width=1, dash='dash'),
+                            name='Promedio (P50)'
+                        ))
+
+                        fig_radar.update_layout(
+                            polar=dict(
+                                radialaxis=dict(visible=True, range=[0, 100])
+                            ),
+                            showlegend=True,
+                            title="Perfil de Potencia (Percentiles)",
+                            height=400
+                        )
+                        st.plotly_chart(fig_radar, use_container_width=True)
+
+                with col_profile2:
+                    st.metric("Tipo de Ciclista", full_profile['rider_type'])
+                    st.metric("Score General", f"{full_profile['overall_score']:.0f}/100")
+
+                    if full_profile['strengths']:
+                        st.success(f"💪 **Fortalezas:** {', '.join(full_profile['strengths'])}")
+                    if full_profile['weaknesses']:
+                        st.warning(f"📈 **A mejorar:** {', '.join(full_profile['weaknesses'])}")
+
+                    # Tabla de potencias
+                    st.markdown("**Detalle por duración:**")
+                    for duration, data in powers.items():
+                        st.caption(f"• {duration_labels.get(duration, duration)}: {data['watts']:.0f}W ({data['watts_per_kg']:.2f} w/kg) - P{data['percentile']}")
+
+            # Gráfico de evolución de potencia si hay historial
+            if power_from_csv and power_from_csv['power_history'] and len(power_from_csv['power_history']) > 1:
+                st.divider()
+                st.subheader("📈 Evolución de Potencia")
+
+                history_df = pd.DataFrame(power_from_csv['power_history'])
+                history_df['date'] = pd.to_datetime(history_df['date'])
+
+                fig_power_evolution = go.Figure()
+
+                # Potencia promedio
+                fig_power_evolution.add_trace(go.Scatter(
+                    x=history_df['date'],
+                    y=history_df['avg_power'],
+                    mode='lines+markers',
+                    name='Potencia Media',
+                    line=dict(color='#FF6B00', width=2),
+                    marker=dict(size=6)
+                ))
+
+                # Potencia máxima si existe
+                if 'max_power' in history_df.columns and history_df['max_power'].sum() > 0:
+                    fig_power_evolution.add_trace(go.Scatter(
+                        x=history_df['date'],
+                        y=history_df['max_power'],
+                        mode='lines+markers',
+                        name='Potencia Máxima',
+                        line=dict(color='#E91E63', width=2),
+                        marker=dict(size=6)
+                    ))
+
+                # Línea de FTP actual
+                fig_power_evolution.add_hline(
+                    y=ftp_input,
+                    line_dash="dash",
+                    line_color="green",
+                    annotation_text=f"FTP: {ftp_input}W"
+                )
+
+                fig_power_evolution.update_layout(
+                    title='Evolución de Potencia en tus Actividades',
+                    xaxis_title='Fecha',
+                    yaxis_title='Potencia (watts)',
+                    height=400,
+                    hovermode='x unified',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                st.plotly_chart(fig_power_evolution, use_container_width=True)
+
+            # Recomendaciones de entrenamiento
+            st.divider()
+            st.subheader("💡 Recomendaciones de Entrenamiento")
+
+            recommendations = ftp_analysis['training_recommendations']
+            for i, rec in enumerate(recommendations, 1):
+                st.markdown(f"{i}. {rec}")
+
+            # Tabla de referencia
+            with st.expander("📚 Tabla de Referencia de Categorías (Coggan/Allen)"):
+                st.markdown(f"**Tabla para {'Hombres' if gender == 'male' else 'Mujeres'}:**")
+
+                ref_table = []
+                categories = power_analyzer.power_categories
+                for cat_name, cat_data in categories.items():
+                    ref_table.append({
+                        'Categoría': cat_name,
+                        'W/kg mínimo': f"{cat_data['min_wpkg']:.2f}",
+                        f'Watts ({weight}kg)': f"{cat_data['min_wpkg'] * weight:.0f}",
+                        'Descripción': cat_data['description']
+                    })
+                st.table(pd.DataFrame(ref_table))
+
+                st.markdown("""
+                ### Notas sobre las categorías:
+                - **FTP (Functional Threshold Power)**: Potencia máxima sostenible durante ~1 hora
+                - Los valores son para FTP, no para potencias de corta duración
+                - Las categorías están basadas en datos de ciclistas de todo el mundo
+                - El percentil ajustado por edad considera el declive natural de potencia (~1%/año después de 35)
+                """)
+        else:
+            st.info("👆 Introduce tu FTP (Functional Threshold Power) para comenzar el análisis")
+
+            with st.expander("❓ ¿Cómo calcular mi FTP?"):
+                st.markdown("""
+                ### Métodos para estimar tu FTP:
+
+                1. **Test de 20 minutos**:
+                   - Calienta 10-15 minutos
+                   - Pedalea 20 minutos al máximo esfuerzo sostenible
+                   - Tu FTP ≈ 95% de la potencia media de esos 20 minutos
+
+                2. **Test de rampa**:
+                   - Comienza a baja potencia y aumenta cada minuto
+                   - Continúa hasta el agotamiento
+                   - Tu FTP ≈ 75% de la potencia del último minuto completado
+
+                3. **Desde Zwift/TrainerRoad**: Estas plataformas calculan tu FTP automáticamente
+
+                4. **Estimación desde carrera de 1 hora**: Tu potencia media en una contrarreloj de 1 hora es aproximadamente tu FTP
+                """)
 
     # Tab 3: Training Zones
     with tab3:
