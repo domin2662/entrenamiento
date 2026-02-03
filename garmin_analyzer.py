@@ -784,50 +784,51 @@ class GarminDataAnalyzer:
         """
         Normaliza CTL a un score de 0-100.
 
-        Basado en valores de referencia de CTL para diferentes niveles de atletas:
-        - Principiante: CTL 10-25
-        - Recreacional: CTL 25-50
-        - Aficionado activo: CTL 50-80
-        - Competidor amateur: CTL 80-120
-        - Élite: CTL 120+
+        Escala calibrada para TRIMP de Banister (que produce valores más altos):
+        - Sedentario/Principiante: CTL 0-30 → Score 0-25
+        - Recreacional (3-5h/sem): CTL 30-60 → Score 25-45
+        - Aficionado activo (5-8h/sem): CTL 60-90 → Score 45-60
+        - Competidor amateur (8-12h/sem): CTL 90-120 → Score 60-75
+        - Semi-profesional (12-18h/sem): CTL 120-160 → Score 75-85
+        - Profesional (18-25h/sem): CTL 160+ → Score 85-100
 
-        La normalización usa una función logarítmica-lineal que es más realista
-        que una sigmoide pura, especialmente para valores bajos de CTL.
+        Referencia: Con TRIMP Banister, 1h de Z2 ≈ 90 TRIMP, 1h de Z3 ≈ 130 TRIMP
         """
         # Validar CTL
         if pd.isna(ctl) or ctl < 0:
             ctl = 0
 
-        # Factor de edad: declive fisiológico de ~0.7% por año después de 30
-        # Basado en estudios de VO2max y capacidad aeróbica
-        age_factor = 1.0 - (max(0, age - 30) * 0.007)
-        age_factor = max(0.65, age_factor)  # Mínimo 65% a edad avanzada
+        # Factor de edad: declive fisiológico de ~0.5% por año después de 30
+        # (reducido de 0.7% porque el CTL ya refleja capacidad real)
+        age_factor = 1.0 - (max(0, age - 30) * 0.005)
+        age_factor = max(0.75, age_factor)  # Mínimo 75% a edad avanzada
 
-        # NO penalizar por género - el CTL ya refleja la capacidad individual
-        # Las diferencias fisiológicas ya están capturadas en los coeficientes TRIMP
+        # CTL de referencia más alto para TRIMP Banister
+        # CTL de 70 = score 50 para un adulto de 30 años (aficionado activo)
+        reference_ctl = 70 * age_factor
 
-        # Valores de referencia de CTL ajustados por edad
-        # CTL de 40 = score 50 para un adulto de 30 años
-        reference_ctl = 40 * age_factor
-
-        # Usar función de normalización híbrida:
-        # - Para CTL bajo (0-30): crecimiento más rápido
-        # - Para CTL medio (30-80): crecimiento lineal
-        # - Para CTL alto (80+): saturación gradual
-
+        # Escala más conservadora con saturación más gradual
         if ctl <= 0:
             normalized = 0
-        elif ctl <= reference_ctl * 0.5:
-            # Zona baja: crecimiento acelerado (0-25 score aprox)
-            normalized = 25 * (ctl / (reference_ctl * 0.5))
-        elif ctl <= reference_ctl * 1.5:
-            # Zona media: crecimiento lineal (25-65 score aprox)
-            normalized = 25 + 40 * ((ctl - reference_ctl * 0.5) / reference_ctl)
+        elif ctl <= reference_ctl * 0.4:
+            # Zona baja (0-28 CTL aprox): principiante → score 0-25
+            normalized = 25 * (ctl / (reference_ctl * 0.4))
+        elif ctl <= reference_ctl * 0.85:
+            # Zona media-baja (28-60 CTL): recreacional → score 25-45
+            normalized = 25 + 20 * ((ctl - reference_ctl * 0.4) / (reference_ctl * 0.45))
+        elif ctl <= reference_ctl * 1.3:
+            # Zona media (60-91 CTL): aficionado activo → score 45-60
+            normalized = 45 + 15 * ((ctl - reference_ctl * 0.85) / (reference_ctl * 0.45))
+        elif ctl <= reference_ctl * 1.7:
+            # Zona media-alta (91-119 CTL): competidor amateur → score 60-75
+            normalized = 60 + 15 * ((ctl - reference_ctl * 1.3) / (reference_ctl * 0.4))
+        elif ctl <= reference_ctl * 2.3:
+            # Zona alta (119-161 CTL): semi-profesional → score 75-85
+            normalized = 75 + 10 * ((ctl - reference_ctl * 1.7) / (reference_ctl * 0.6))
         else:
-            # Zona alta: saturación logarítmica (65-100 score)
-            excess = ctl - reference_ctl * 1.5
-            # Usar logaritmo para saturación suave
-            normalized = 65 + 35 * (1 - np.exp(-excess / (reference_ctl * 1.5)))
+            # Zona élite (161+ CTL): profesional → score 85-100 (saturación)
+            excess = ctl - reference_ctl * 2.3
+            normalized = 85 + 15 * (1 - np.exp(-excess / (reference_ctl * 0.8)))
 
         return min(100, max(0, normalized))
 
