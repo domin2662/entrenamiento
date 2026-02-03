@@ -1550,29 +1550,78 @@ class GarminDataAnalyzer:
                 change_pct = 0
                 trend = 'stable'
 
-            # Decoupling estimado (basado en carreras largas > 45 min)
+            # Decoupling estimado - Método mejorado
+            # El decoupling real se mide dentro de una actividad (primera mitad vs segunda mitad)
+            # Como solo tenemos promedios, estimamos basándonos en carreras largas
+
             long_runs = [e for e in ef_values if e['duration'] > 45]
             decoupling = 0
-            if len(long_runs) >= 2:
-                # Comparar EF de carreras cortas vs largas
-                short_runs = [e for e in ef_values if e['duration'] <= 45]
-                if short_runs:
-                    avg_ef_short = np.mean([e['ef'] for e in short_runs])
-                    avg_ef_long = np.mean([e['ef'] for e in long_runs])
-                    decoupling = ((avg_ef_short - avg_ef_long) / avg_ef_short * 100) if avg_ef_short > 0 else 0
-                    decoupling = max(0, decoupling)  # No puede ser negativo
-            elif long_runs:
-                # Estimación basada en duración de la última carrera larga
-                last_long = long_runs[-1]
-                # Aproximación: 2-3% decoupling por cada 30 min extra
-                extra_time = last_long['duration'] - 45
-                decoupling = min(15, extra_time * 0.07)
+            decoupling_status = "Sin datos suficientes"
+
+            if long_runs:
+                # Método 1: Analizar correlación HR/Pace en carreras largas
+                # Ordenar por fecha para ver las más recientes
+                long_runs_sorted = sorted(long_runs, key=lambda x: x['date'], reverse=True)
+
+                # Calcular EF normalizado por distancia para carreras largas
+                # A mayor distancia, esperamos menor EF si hay decoupling
+                ef_by_duration = []
+                for run in long_runs_sorted[:5]:  # Últimas 5 carreras largas
+                    # EF esperado para la duración (modelo lineal)
+                    expected_ef = current_ef * (45 / run['duration'])  # EF teórico si no hubiera fatiga
+                    actual_ef = run['ef']
+                    # Decoupling individual = pérdida de EF vs esperado
+                    individual_dec = ((expected_ef - actual_ef) / expected_ef * 100) if expected_ef > 0 else 0
+                    ef_by_duration.append({
+                        'duration': run['duration'],
+                        'ef': actual_ef,
+                        'decoupling_pct': max(0, individual_dec),
+                        'hr': run['hr']
+                    })
+
+                if ef_by_duration:
+                    # Promedio de decoupling de las últimas carreras largas
+                    decoupling = np.mean([e['decoupling_pct'] for e in ef_by_duration])
+
+                    # Método alternativo: usar regresión lineal HR vs tiempo
+                    # Carreras más largas tienden a tener mayor HR relativo
+                    if len(long_runs) >= 2:
+                        # Calcular incremento de HR por minuto extra
+                        durations = [r['duration'] for r in long_runs_sorted[:5]]
+                        hrs = [r['hr'] for r in long_runs_sorted[:5]]
+                        if len(set(durations)) > 1:  # Evitar división por cero
+                            hr_drift = (max(hrs) - min(hrs)) / (max(durations) - min(durations)) if max(durations) != min(durations) else 0
+                            # Ajustar decoupling basado en drift de HR
+                            decoupling = max(decoupling, hr_drift * 2)  # ~2% por bpm de drift
+
+                # Limitar a rango realista (0-20%)
+                decoupling = min(20, max(0, decoupling))
+
+                # Determinar status
+                if decoupling < 3:
+                    decoupling_status = "✅ Excelente eficiencia aeróbica"
+                elif decoupling < 5:
+                    decoupling_status = "✅ Buena eficiencia aeróbica"
+                elif decoupling < 8:
+                    decoupling_status = "⚡ Eficiencia moderada - Mejorable"
+                else:
+                    decoupling_status = "⚠️ Baja eficiencia aeróbica"
+            else:
+                # Si no hay carreras largas, estimar basado en variabilidad de EF
+                if len(ef_values) >= 3:
+                    ef_std = np.std([e['ef'] for e in ef_values])
+                    ef_mean = np.mean([e['ef'] for e in ef_values])
+                    cv = (ef_std / ef_mean * 100) if ef_mean > 0 else 0
+                    # Coeficiente de variación alto sugiere posible decoupling
+                    decoupling = min(15, cv * 0.5)  # Estimación conservadora
+                    decoupling_status = "📊 Estimado (sin carreras >45min)"
 
             return {
                 'current_ef': round(current_ef, 3),
                 'trend': trend,
                 'change_pct': round(change_pct, 1),
                 'decoupling': round(decoupling, 1),
+                'decoupling_status': decoupling_status,
                 'ef_history': ef_values[-10:]  # Últimas 10 actividades
             }
 

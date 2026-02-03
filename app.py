@@ -1080,8 +1080,19 @@ def main():
 
             with col_ef2:
                 decoupling = am.get('decoupling', 0)
-                dec_status = "Bueno" if decoupling < 5 else "Mejorable"
-                st.metric("Decoupling", f"{decoupling:.1f}%", dec_status)
+                if decoupling < 3:
+                    dec_status = "Excelente"
+                    dec_delta_color = "normal"
+                elif decoupling < 5:
+                    dec_status = "Bueno"
+                    dec_delta_color = "normal"
+                elif decoupling < 8:
+                    dec_status = "Moderado"
+                    dec_delta_color = "off"
+                else:
+                    dec_status = "Mejorable"
+                    dec_delta_color = "inverse"
+                st.metric("Decoupling", f"{decoupling:.1f}%", dec_status, delta_color=dec_delta_color)
 
             with col_ef3:
                 vo2max = am.get('vo2max_estimated', 0)
