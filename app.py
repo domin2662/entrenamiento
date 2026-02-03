@@ -9,6 +9,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from io import BytesIO
 import json
 import struct
@@ -140,12 +141,13 @@ def main():
         training_days_per_week = st.slider("Días de Entrenamiento por Semana", min_value=3, max_value=7, value=4)
 
     # Main content area
-    tab1, tab2, tab2b, tab2c, tab3, tab4, tab4b, tab5 = st.tabs([
+    tab1, tab2, tab2b, tab2c, tab2d, tab3, tab4, tab4b, tab5 = st.tabs([
         "📁 Subir Datos",
         "📈 Análisis de Forma",
         "🏆 Fitness Score",
         "⚡ Power Profile",
-        "🎯 Zonas de Entrenamiento",
+        "🎯 Dashboard Avanzado",
+        "🏃 Zonas de Entrenamiento",
         "📅 Plan de Entrenamiento",
         "📆 Calendario Interactivo",
         "📤 Exportar"
@@ -160,6 +162,8 @@ def main():
         st.session_state.fitness_score = None
     if 'training_plan' not in st.session_state:
         st.session_state.training_plan = None
+    if 'advanced_metrics' not in st.session_state:
+        st.session_state.advanced_metrics = None
 
     # Tab 1: Upload Garmin Data
     with tab1:
@@ -201,6 +205,11 @@ def main():
 
                 # Calculate fitness score with TRIMP
                 st.session_state.fitness_score = analyzer.calculate_fitness_score(
+                    df, max_hr=max_hr, resting_hr=resting_hr, age=age, gender=gender
+                )
+
+                # Calculate advanced metrics
+                st.session_state.advanced_metrics = analyzer.calculate_advanced_metrics(
                     df, max_hr=max_hr, resting_hr=resting_hr, age=age, gender=gender
                 )
 
@@ -848,6 +857,857 @@ def main():
 
                 4. **Estimación desde carrera de 1 hora**: Tu potencia media en una contrarreloj de 1 hora es aproximadamente tu FTP
                 """)
+
+    # Tab 2d: Advanced Dashboard
+    with tab2d:
+        st.header("🎯 Dashboard Avanzado - Estado de Entrenamiento")
+
+        if st.session_state.advanced_metrics is not None:
+            am = st.session_state.advanced_metrics
+
+            # Recomendación del día destacada
+            st.markdown("### 📋 Recomendación del Día")
+            recommendation = am.get('daily_recommendation', 'Sube datos para obtener recomendaciones')
+
+            # Determinar color según contenido
+            if '🛑' in recommendation or 'DESCANSO' in recommendation:
+                rec_color = '#ffebee'
+                border_color = '#f44336'
+            elif '⚠️' in recommendation or 'SUAVE' in recommendation:
+                rec_color = '#fff3e0'
+                border_color = '#ff9800'
+            else:
+                rec_color = '#e8f5e9'
+                border_color = '#4caf50'
+
+            st.markdown(f"""
+            <div style="padding: 20px; background-color: {rec_color}; border-left: 5px solid {border_color};
+                        border-radius: 8px; margin-bottom: 20px; font-size: 1.1em;">
+                {recommendation}
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Alertas activas
+            alerts = am.get('alerts', [])
+            if alerts:
+                st.markdown("### ⚠️ Alertas Activas")
+                for alert in alerts:
+                    alert_type = alert.get('type', 'info')
+                    if alert_type == 'danger':
+                        st.error(f"{alert.get('icon', '')} **{alert.get('title', '')}**: {alert.get('message', '')}")
+                    elif alert_type == 'warning':
+                        st.warning(f"{alert.get('icon', '')} **{alert.get('title', '')}**: {alert.get('message', '')}")
+                    else:
+                        st.info(f"{alert.get('icon', '')} **{alert.get('title', '')}**: {alert.get('message', '')}")
+
+            st.divider()
+
+            # Métricas principales en 4 columnas
+            st.markdown("### 📊 Métricas de Riesgo y Carga")
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                acwr = am.get('acwr', 0)
+                acwr_delta = "Óptimo" if 0.8 <= acwr <= 1.3 else "Fuera de rango"
+                st.metric("ACWR", f"{acwr:.2f}", acwr_delta)
+                st.caption(am.get('acwr_status', ''))
+
+            with col2:
+                ramp = am.get('ramp_rate', 0)
+                ramp_delta = f"{ramp:+.1f} pts/sem"
+                st.metric("Ramp Rate", f"{ramp:.1f}", ramp_delta)
+                st.caption(am.get('ramp_status', ''))
+
+            with col3:
+                monotony = am.get('monotony', 0)
+                st.metric("Monotonía", f"{monotony:.2f}")
+                st.caption(am.get('monotony_status', ''))
+
+            with col4:
+                strain = am.get('strain', 0)
+                strain_status = "Alto" if strain > 4000 else "Normal"
+                st.metric("Strain", f"{strain:.0f}", strain_status)
+
+            # Gráfico de ACWR con zonas
+            st.markdown("### 📈 Zona de Riesgo ACWR")
+
+            fig_acwr = go.Figure()
+
+            # Zonas de fondo
+            fig_acwr.add_shape(type="rect", x0=0, x1=1, y0=0, y1=0.8,
+                              fillcolor="rgba(255, 193, 7, 0.3)", line_width=0)
+            fig_acwr.add_shape(type="rect", x0=0, x1=1, y0=0.8, y1=1.3,
+                              fillcolor="rgba(76, 175, 80, 0.3)", line_width=0)
+            fig_acwr.add_shape(type="rect", x0=0, x1=1, y0=1.3, y1=1.5,
+                              fillcolor="rgba(255, 152, 0, 0.3)", line_width=0)
+            fig_acwr.add_shape(type="rect", x0=0, x1=1, y0=1.5, y1=2.0,
+                              fillcolor="rgba(244, 67, 54, 0.3)", line_width=0)
+
+            # Indicador actual
+            fig_acwr.add_trace(go.Indicator(
+                mode="gauge+number",
+                value=acwr,
+                gauge={
+                    'axis': {'range': [0, 2], 'tickwidth': 1},
+                    'bar': {'color': "#1E88E5"},
+                    'steps': [
+                        {'range': [0, 0.8], 'color': "rgba(255, 193, 7, 0.5)"},
+                        {'range': [0.8, 1.3], 'color': "rgba(76, 175, 80, 0.5)"},
+                        {'range': [1.3, 1.5], 'color': "rgba(255, 152, 0, 0.5)"},
+                        {'range': [1.5, 2], 'color': "rgba(244, 67, 54, 0.5)"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': acwr
+                    }
+                },
+                title={'text': "ACWR (Acute:Chronic Workload Ratio)"}
+            ))
+
+            fig_acwr.update_layout(height=250)
+            st.plotly_chart(fig_acwr, use_container_width=True)
+
+            st.caption("🟡 < 0.8: Desentrenamiento | 🟢 0.8-1.3: Óptimo | 🟠 1.3-1.5: Precaución | 🔴 > 1.5: Alto riesgo")
+
+            # Gráficos de Evolución Temporal
+            metrics_evo = am.get('metrics_evolution', {})
+
+            if metrics_evo and metrics_evo.get('acwr'):
+                st.markdown("### 📈 Evolución ACWR y Carga")
+
+                acwr_data = metrics_evo.get('acwr', [])
+                if acwr_data:
+                    evo_df = pd.DataFrame(acwr_data)
+                    evo_df['date'] = pd.to_datetime(evo_df['date'])
+
+                    # Gráfico de ACWR con zonas de riesgo
+                    fig_acwr_evo = go.Figure()
+
+                    # Zonas de fondo
+                    fig_acwr_evo.add_hrect(y0=0, y1=0.8, fillcolor="rgba(255, 193, 7, 0.2)",
+                                           line_width=0, annotation_text="Desentrenamiento",
+                                           annotation_position="top left")
+                    fig_acwr_evo.add_hrect(y0=0.8, y1=1.3, fillcolor="rgba(76, 175, 80, 0.2)",
+                                           line_width=0, annotation_text="Óptimo")
+                    fig_acwr_evo.add_hrect(y0=1.3, y1=1.5, fillcolor="rgba(255, 152, 0, 0.2)",
+                                           line_width=0, annotation_text="Precaución")
+                    fig_acwr_evo.add_hrect(y0=1.5, y1=2.0, fillcolor="rgba(244, 67, 54, 0.2)",
+                                           line_width=0, annotation_text="Alto riesgo")
+
+                    # Línea de ACWR
+                    fig_acwr_evo.add_trace(go.Scatter(
+                        x=evo_df['date'], y=evo_df['acwr'],
+                        mode='lines+markers', name='ACWR',
+                        line=dict(color='#1E88E5', width=2),
+                        marker=dict(size=4)
+                    ))
+
+                    fig_acwr_evo.update_layout(
+                        title='Evolución del ACWR',
+                        xaxis_title='Fecha', yaxis_title='ACWR',
+                        height=350, yaxis=dict(range=[0, 2]),
+                        hovermode='x unified'
+                    )
+                    st.plotly_chart(fig_acwr_evo, use_container_width=True)
+
+                    # Gráfico CTL/ATL/TSB
+                    fig_ctl = go.Figure()
+                    fig_ctl.add_trace(go.Scatter(
+                        x=evo_df['date'], y=evo_df['ctl'],
+                        mode='lines', name='CTL (Fitness)',
+                        line=dict(color='#4CAF50', width=2)
+                    ))
+                    fig_ctl.add_trace(go.Scatter(
+                        x=evo_df['date'], y=evo_df['atl'],
+                        mode='lines', name='ATL (Fatiga)',
+                        line=dict(color='#F44336', width=2)
+                    ))
+                    fig_ctl.add_trace(go.Scatter(
+                        x=evo_df['date'], y=evo_df['tsb'],
+                        mode='lines', name='TSB (Forma)',
+                        fill='tozeroy', line=dict(color='#2196F3', width=1),
+                        fillcolor='rgba(33, 150, 243, 0.3)'
+                    ))
+                    fig_ctl.add_hline(y=0, line_dash="dash", line_color="gray")
+
+                    fig_ctl.update_layout(
+                        title='Performance Management Chart (CTL/ATL/TSB)',
+                        xaxis_title='Fecha', yaxis_title='Puntos',
+                        height=350, hovermode='x unified',
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02)
+                    )
+                    st.plotly_chart(fig_ctl, use_container_width=True)
+
+            # Gráfico de Ramp Rate
+            ramp_data = metrics_evo.get('ramp_rate', [])
+            if ramp_data:
+                st.markdown("### 📊 Evolución Ramp Rate")
+                ramp_df = pd.DataFrame(ramp_data)
+                ramp_df['date'] = pd.to_datetime(ramp_df['date'])
+
+                # Colorear barras según zona
+                colors = ['#4CAF50' if 0 <= r <= 7 else '#F44336' if r > 7 else '#FFC107'
+                          for r in ramp_df['ramp_rate']]
+
+                fig_ramp = go.Figure()
+                fig_ramp.add_trace(go.Bar(
+                    x=ramp_df['date'], y=ramp_df['ramp_rate'],
+                    marker_color=colors, name='Ramp Rate'
+                ))
+                fig_ramp.add_hline(y=7, line_dash="dash", line_color="red",
+                                   annotation_text="Límite seguro")
+                fig_ramp.add_hline(y=0, line_dash="solid", line_color="gray")
+
+                fig_ramp.update_layout(
+                    title='Ramp Rate Semanal (cambio de CTL)',
+                    xaxis_title='Fecha', yaxis_title='Puntos/semana',
+                    height=300
+                )
+                st.plotly_chart(fig_ramp, use_container_width=True)
+
+            st.divider()
+
+            # Eficiencia y VO2max
+            st.markdown("### 🏃 Rendimiento Aeróbico")
+            col_ef1, col_ef2, col_ef3, col_ef4 = st.columns(4)
+
+            with col_ef1:
+                ef = am.get('efficiency_factor', 0)
+                ef_trend = am.get('ef_trend', 'stable')
+                trend_icon = "📈" if ef_trend == 'improving' else "📉" if ef_trend == 'declining' else "➡️"
+                st.metric("Efficiency Factor", f"{ef:.3f}", f"{trend_icon} {am.get('ef_change_pct', 0):.1f}%")
+
+            with col_ef2:
+                decoupling = am.get('decoupling', 0)
+                dec_status = "Bueno" if decoupling < 5 else "Mejorable"
+                st.metric("Decoupling", f"{decoupling:.1f}%", dec_status)
+
+            with col_ef3:
+                vo2max = am.get('vo2max_estimated', 0)
+                st.metric("VO2max Estimado", f"{vo2max:.1f} ml/kg/min")
+                st.caption(am.get('vo2max_category', ''))
+
+            with col_ef4:
+                vi = am.get('variability_index', 0)
+                if vi > 0:
+                    st.metric("Variability Index", f"{vi:.2f}")
+                    st.caption("Ciclismo")
+                else:
+                    if_val = am.get('intensity_factor', 0)
+                    st.metric("Intensity Factor", f"{if_val:.2f}")
+
+            # Gráficos de evolución de rendimiento
+            col_evo1, col_evo2 = st.columns(2)
+
+            # Gráfico de Efficiency Factor
+            ef_data = metrics_evo.get('efficiency_factor', [])
+            if ef_data:
+                with col_evo1:
+                    ef_df = pd.DataFrame(ef_data)
+                    ef_df['date'] = pd.to_datetime(ef_df['date'])
+
+                    fig_ef = go.Figure()
+                    fig_ef.add_trace(go.Scatter(
+                        x=ef_df['date'], y=ef_df['ef'],
+                        mode='lines+markers', name='EF',
+                        line=dict(color='#9C27B0', width=2),
+                        marker=dict(size=6),
+                        hovertemplate='%{x}<br>EF: %{y:.3f}<br>Ritmo: %{customdata[0]:.2f} min/km<br>Distancia: %{customdata[1]:.1f} km',
+                        customdata=ef_df[['pace', 'distance']].values
+                    ))
+
+                    # Línea de tendencia
+                    if len(ef_df) >= 3:
+                        z = np.polyfit(range(len(ef_df)), ef_df['ef'], 1)
+                        p = np.poly1d(z)
+                        fig_ef.add_trace(go.Scatter(
+                            x=ef_df['date'], y=p(range(len(ef_df))),
+                            mode='lines', name='Tendencia',
+                            line=dict(color='rgba(156, 39, 176, 0.4)', width=2, dash='dash')
+                        ))
+
+                    fig_ef.update_layout(
+                        title='Evolución Efficiency Factor (Running)',
+                        xaxis_title='Fecha', yaxis_title='EF (velocidad/FC)',
+                        height=350, showlegend=True
+                    )
+                    st.plotly_chart(fig_ef, use_container_width=True)
+
+            # Gráfico de Monotony y Strain
+            mono_data = metrics_evo.get('monotony_strain', [])
+            if mono_data:
+                with col_evo2:
+                    mono_df = pd.DataFrame(mono_data)
+                    mono_df['date'] = pd.to_datetime(mono_df['date'])
+
+                    fig_mono = make_subplots(specs=[[{"secondary_y": True}]])
+
+                    # Monotony
+                    fig_mono.add_trace(go.Scatter(
+                        x=mono_df['date'], y=mono_df['monotony'],
+                        mode='lines+markers', name='Monotonía',
+                        line=dict(color='#FF9800', width=2),
+                        marker=dict(size=4)
+                    ), secondary_y=False)
+
+                    # Línea de referencia monotonía
+                    fig_mono.add_hline(y=2.0, line_dash="dash", line_color="red",
+                                       annotation_text="Límite monotonía", secondary_y=False)
+
+                    # Strain como barras
+                    fig_mono.add_trace(go.Bar(
+                        x=mono_df['date'], y=mono_df['strain'],
+                        name='Strain', marker_color='rgba(244, 67, 54, 0.5)',
+                        opacity=0.6
+                    ), secondary_y=True)
+
+                    fig_mono.update_layout(
+                        title='Monotonía y Strain Semanal',
+                        height=350, hovermode='x unified',
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02)
+                    )
+                    fig_mono.update_yaxes(title_text="Monotonía", secondary_y=False)
+                    fig_mono.update_yaxes(title_text="Strain", secondary_y=True)
+                    st.plotly_chart(fig_mono, use_container_width=True)
+
+            # Gráfico de métricas de potencia (ciclismo)
+            power_data = metrics_evo.get('power_metrics', [])
+            if power_data:
+                st.markdown("### 🚴 Evolución Métricas de Potencia")
+                power_df = pd.DataFrame(power_data)
+                power_df['date'] = pd.to_datetime(power_df['date'])
+
+                col_pow1, col_pow2 = st.columns(2)
+
+                with col_pow1:
+                    fig_np = go.Figure()
+                    fig_np.add_trace(go.Scatter(
+                        x=power_df['date'], y=power_df['np'],
+                        mode='lines+markers', name='NP (Normalizada)',
+                        line=dict(color='#E91E63', width=2)
+                    ))
+                    fig_np.add_trace(go.Scatter(
+                        x=power_df['date'], y=power_df['avg_power'],
+                        mode='lines+markers', name='Potencia Media',
+                        line=dict(color='#03A9F4', width=2)
+                    ))
+                    fig_np.update_layout(
+                        title='Potencia por Actividad',
+                        xaxis_title='Fecha', yaxis_title='Watts',
+                        height=300, hovermode='x unified'
+                    )
+                    st.plotly_chart(fig_np, use_container_width=True)
+
+                with col_pow2:
+                    fig_tss = go.Figure()
+                    fig_tss.add_trace(go.Bar(
+                        x=power_df['date'], y=power_df['tss'],
+                        name='TSS', marker_color='#673AB7'
+                    ))
+                    fig_tss.update_layout(
+                        title='TSS por Actividad',
+                        xaxis_title='Fecha', yaxis_title='TSS',
+                        height=300
+                    )
+                    st.plotly_chart(fig_tss, use_container_width=True)
+
+                # VI e IF
+                fig_vi_if = go.Figure()
+                fig_vi_if.add_trace(go.Scatter(
+                    x=power_df['date'], y=power_df['vi'],
+                    mode='lines+markers', name='Variability Index',
+                    line=dict(color='#009688', width=2)
+                ))
+                fig_vi_if.add_trace(go.Scatter(
+                    x=power_df['date'], y=power_df['if'],
+                    mode='lines+markers', name='Intensity Factor',
+                    line=dict(color='#FF5722', width=2)
+                ))
+                fig_vi_if.add_hline(y=1.0, line_dash="dash", line_color="gray",
+                                    annotation_text="IF=1.0 (umbral FTP)")
+                fig_vi_if.update_layout(
+                    title='Variability Index e Intensity Factor',
+                    xaxis_title='Fecha', yaxis_title='Valor',
+                    height=300, hovermode='x unified'
+                )
+                st.plotly_chart(fig_vi_if, use_container_width=True)
+
+            # Gráfico de VO2max
+            vo2_data = metrics_evo.get('vo2max', [])
+            if vo2_data:
+                st.markdown("### 🫁 Evolución VO2max Estimado")
+                vo2_df = pd.DataFrame(vo2_data)
+
+                fig_vo2 = go.Figure()
+                fig_vo2.add_trace(go.Scatter(
+                    x=vo2_df['date'], y=vo2_df['vo2max'],
+                    mode='lines+markers', name='VO2max',
+                    line=dict(color='#E91E63', width=3),
+                    marker=dict(size=10),
+                    hovertemplate='%{x}<br>VO2max: %{y:.1f} ml/kg/min<br>Mejor ritmo: %{customdata[0]:.2f} min/km',
+                    customdata=vo2_df[['best_pace']].values
+                ))
+
+                # Zonas de referencia
+                fig_vo2.add_hrect(y0=55, y1=70, fillcolor="rgba(76, 175, 80, 0.2)",
+                                  annotation_text="Excelente", annotation_position="right")
+                fig_vo2.add_hrect(y0=45, y1=55, fillcolor="rgba(139, 195, 74, 0.2)",
+                                  annotation_text="Muy bueno", annotation_position="right")
+                fig_vo2.add_hrect(y0=35, y1=45, fillcolor="rgba(255, 193, 7, 0.2)",
+                                  annotation_text="Bueno", annotation_position="right")
+
+                fig_vo2.update_layout(
+                    title='Evolución VO2max Estimado (por mes)',
+                    xaxis_title='Mes', yaxis_title='VO2max (ml/kg/min)',
+                    height=350
+                )
+                st.plotly_chart(fig_vo2, use_container_width=True)
+
+            st.divider()
+
+            # Predicciones de carrera
+            st.markdown("### 🏆 Predicciones de Carrera")
+            predictions = am.get('race_predictions', {})
+
+            if predictions and 'base_race' in predictions:
+                base = predictions.get('base_race', {})
+                st.info(f"📊 Basado en tu carrera de **{base.get('distance', 'N/A')}** en **{base.get('time', 'N/A')}** ({base.get('date', '')})")
+
+                col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+
+                with col_p1:
+                    p5k = predictions.get('5K', {})
+                    st.metric("5K", p5k.get('time', 'N/A'))
+                    st.caption(p5k.get('pace', ''))
+
+                with col_p2:
+                    p10k = predictions.get('10K', {})
+                    st.metric("10K", p10k.get('time', 'N/A'))
+                    st.caption(p10k.get('pace', ''))
+
+                with col_p3:
+                    phm = predictions.get('Media Maratón', {})
+                    st.metric("Media Maratón", phm.get('time', 'N/A'))
+                    st.caption(phm.get('pace', ''))
+
+                with col_p4:
+                    pm = predictions.get('Maratón', {})
+                    st.metric("Maratón", pm.get('time', 'N/A'))
+                    st.caption(pm.get('pace', ''))
+            else:
+                st.info("💡 Realiza una carrera de 5K o 10K para obtener predicciones de tiempos")
+
+            st.divider()
+
+            # Explicación detallada de métricas
+            st.markdown("### 📚 Guía de Métricas")
+
+            with st.expander("🔴 ACWR - Acute:Chronic Workload Ratio", expanded=False):
+                st.markdown("""
+                #### ¿Qué es?
+                El **ACWR** (Ratio de Carga Aguda:Crónica) compara tu carga de entrenamiento reciente
+                (últimos 7 días) con tu carga habitual (últimos 28 días). Es el indicador más importante
+                para **prevenir lesiones**.
+
+                #### ¿Cómo se calcula?
+                ```
+                ACWR = Carga Aguda (7 días) / Carga Crónica (28 días)
+                ```
+
+                #### Interpretación
+                | Valor | Zona | Significado | Acción |
+                |-------|------|-------------|--------|
+                | < 0.8 | 🟡 Baja | Desentrenamiento, pérdida de forma | Aumentar carga gradualmente |
+                | 0.8 - 1.0 | 🟢 Óptima baja | Mantenimiento, recuperación activa | Ideal para semanas de descarga |
+                | 1.0 - 1.3 | 🟢 Óptima alta | Progresión segura, adaptación | Zona ideal para mejorar |
+                | 1.3 - 1.5 | 🟠 Precaución | Riesgo moderado de lesión | Monitorizar síntomas |
+                | > 1.5 | 🔴 Peligro | Alto riesgo de lesión (2-4x mayor) | Reducir carga inmediatamente |
+
+                #### Evidencia científica
+                Estudios de Gabbett (2016) y Hulin (2014) demuestran que mantener el ACWR entre
+                0.8-1.3 reduce el riesgo de lesión hasta un 50% en atletas de resistencia.
+
+                #### Consejos prácticos
+                - **No aumentes** la carga semanal más del 10% respecto a la semana anterior
+                - Después de una semana de descanso, **vuelve gradualmente** (no al 100%)
+                - Si estás lesionado, el ACWR será alto al volver; planifica una vuelta progresiva
+                """)
+
+            with st.expander("📈 Ramp Rate - Tasa de Progresión", expanded=False):
+                st.markdown("""
+                #### ¿Qué es?
+                El **Ramp Rate** mide cuántos puntos de CTL (Chronic Training Load) ganas o pierdes
+                por semana. Indica si estás progresando demasiado rápido o demasiado lento.
+
+                #### ¿Cómo se calcula?
+                ```
+                Ramp Rate = CTL actual - CTL hace 7 días
+                ```
+
+                #### Interpretación
+                | Valor | Significado | Riesgo |
+                |-------|-------------|--------|
+                | < 0 | Pérdida de forma | Desentrenamiento si es prolongado |
+                | 0 - 3 | Mantenimiento | Bajo riesgo, progresión lenta |
+                | 3 - 5 | Progresión moderada | Óptimo para la mayoría |
+                | 5 - 7 | Progresión agresiva | Aceptable para atletas experimentados |
+                | > 7 | Progresión excesiva | Alto riesgo de sobreentrenamiento |
+
+                #### Consejos prácticos
+                - **Principiantes**: Mantén el Ramp Rate entre 3-5 puntos/semana
+                - **Avanzados**: Puedes tolerar 5-7 puntos/semana en bloques cortos
+                - **Recuperación**: Un Ramp Rate negativo es normal en semanas de descarga
+                - **Precompetición**: Reduce a 0-2 puntos/semana las 2 semanas antes de una carrera
+                """)
+
+            with st.expander("🔄 Monotonía y Strain - Método de Foster", expanded=False):
+                st.markdown("""
+                #### ¿Qué es la Monotonía?
+                La **Monotonía** mide cuán repetitivo es tu entrenamiento. Un entrenamiento muy
+                similar día tras día aumenta el riesgo de lesiones por sobreuso.
+
+                #### ¿Cómo se calcula?
+                ```
+                Monotonía = Media diaria de carga / Desviación estándar de carga
+                ```
+
+                #### Interpretación de Monotonía
+                | Valor | Significado |
+                |-------|-------------|
+                | < 1.5 | ✅ Excelente variabilidad |
+                | 1.5 - 2.0 | ✅ Buena variabilidad |
+                | 2.0 - 2.5 | ⚠️ Poca variabilidad |
+                | > 2.5 | 🔴 Entrenamiento muy monótono |
+
+                #### ¿Qué es el Strain?
+                El **Strain** (tensión) combina la carga total con la monotonía para estimar
+                el estrés acumulado en tu cuerpo.
+
+                ```
+                Strain = Carga semanal total × Monotonía
+                ```
+
+                #### Interpretación de Strain
+                | Valor | Significado |
+                |-------|-------------|
+                | < 2000 | Carga baja, bajo riesgo |
+                | 2000 - 4000 | Carga moderada, riesgo normal |
+                | 4000 - 6000 | Carga alta, monitorizar |
+                | > 6000 | Carga muy alta, riesgo de enfermedad/lesión |
+
+                #### Consejos prácticos
+                - **Varía la intensidad**: Alterna días duros y suaves
+                - **Varía la duración**: No hagas siempre la misma distancia
+                - **Incluye descanso**: Al menos 1-2 días de descanso o muy suave por semana
+                - **Semanas de descarga**: Cada 3-4 semanas, reduce la carga un 30-40%
+                """)
+
+            with st.expander("⚡ Efficiency Factor (EF) - Factor de Eficiencia", expanded=False):
+                st.markdown("""
+                #### ¿Qué es?
+                El **Efficiency Factor** mide cuánta velocidad (o potencia) produces por cada
+                latido de tu corazón. Es un indicador directo de tu **eficiencia aeróbica**.
+
+                #### ¿Cómo se calcula?
+                **Para running:**
+                ```
+                EF = Velocidad (metros/minuto) / Frecuencia Cardíaca Media
+                ```
+
+                **Para ciclismo:**
+                ```
+                EF = Potencia Normalizada / Frecuencia Cardíaca Media
+                ```
+
+                #### Interpretación
+                | Tendencia | Significado |
+                |-----------|-------------|
+                | 📈 Subiendo | Tu base aeróbica está mejorando |
+                | ➡️ Estable | Mantenimiento de forma |
+                | 📉 Bajando | Fatiga acumulada o pérdida de forma |
+
+                #### Valores típicos (running)
+                | Nivel | EF aproximado |
+                |-------|---------------|
+                | Principiante | 0.6 - 0.8 |
+                | Intermedio | 0.8 - 1.0 |
+                | Avanzado | 1.0 - 1.2 |
+                | Élite | > 1.2 |
+
+                #### Consejos prácticos
+                - **Compara contigo mismo**: El EF absoluto varía mucho entre personas
+                - **Usa rutas similares**: El terreno afecta mucho al EF
+                - **Condiciones similares**: Calor, viento y altitud afectan al EF
+                - **Mejora con Z2**: El entrenamiento en Zona 2 es el más efectivo para mejorar EF
+                """)
+
+            with st.expander("💔 Decoupling - Desacoplamiento Cardíaco", expanded=False):
+                st.markdown("""
+                #### ¿Qué es?
+                El **Decoupling** mide cuánto se "desacopla" tu frecuencia cardíaca de tu
+                rendimiento durante un entrenamiento largo. Indica la **resistencia de tu
+                sistema aeróbico**.
+
+                #### ¿Cómo se calcula?
+                ```
+                Decoupling = ((EF primera mitad - EF segunda mitad) / EF primera mitad) × 100
+                ```
+
+                #### Interpretación
+                | Valor | Significado | Base aeróbica |
+                |-------|-------------|---------------|
+                | < 3% | Excelente | Muy desarrollada |
+                | 3% - 5% | Bueno | Bien desarrollada |
+                | 5% - 8% | Aceptable | En desarrollo |
+                | > 8% | Mejorable | Necesita más trabajo de base |
+
+                #### ¿Por qué ocurre el decoupling?
+                1. **Deshidratación**: Menos volumen sanguíneo → FC más alta
+                2. **Agotamiento de glucógeno**: Cambio a metabolismo de grasas
+                3. **Fatiga muscular**: Menos eficiencia mecánica
+                4. **Termorregulación**: El cuerpo desvía sangre a la piel
+
+                #### Consejos prácticos
+                - **Test de decoupling**: Haz un rodaje largo (90+ min) a ritmo constante
+                - **Objetivo**: Mantener decoupling < 5% en rodajes de 2+ horas
+                - **Mejora con volumen**: Más kilómetros en Z2 reducen el decoupling
+                - **Nutrición**: Hidratación y carbohidratos durante el ejercicio ayudan
+                """)
+
+            with st.expander("🫁 VO2max - Consumo Máximo de Oxígeno", expanded=False):
+                st.markdown("""
+                #### ¿Qué es?
+                El **VO2max** es la cantidad máxima de oxígeno que tu cuerpo puede utilizar
+                durante el ejercicio intenso. Es el indicador más importante de **capacidad
+                aeróbica** y predictor de rendimiento en resistencia.
+
+                #### ¿Cómo se estima?
+                Usamos el método **VDOT de Jack Daniels**, basado en tus tiempos de carrera:
+                ```
+                VDOT ≈ 80 - (ritmo_min/km × 6.5) × factor_distancia
+                ```
+
+                #### Clasificación por edad y género
+                **Hombres (ml/kg/min):**
+                | Edad | Pobre | Regular | Bueno | Muy bueno | Excelente | Élite |
+                |------|-------|---------|-------|-----------|-----------|-------|
+                | 20-29 | <38 | 38-43 | 44-51 | 52-56 | 57-62 | >62 |
+                | 30-39 | <35 | 35-40 | 41-48 | 49-54 | 55-60 | >60 |
+                | 40-49 | <32 | 32-37 | 38-45 | 46-52 | 53-58 | >58 |
+                | 50-59 | <29 | 29-34 | 35-42 | 43-49 | 50-55 | >55 |
+
+                **Mujeres (ml/kg/min):**
+                | Edad | Pobre | Regular | Bueno | Muy bueno | Excelente | Élite |
+                |------|-------|---------|-------|-----------|-----------|-------|
+                | 20-29 | <32 | 32-37 | 38-43 | 44-49 | 50-55 | >55 |
+                | 30-39 | <29 | 29-34 | 35-40 | 41-46 | 47-52 | >52 |
+                | 40-49 | <26 | 26-31 | 32-37 | 38-43 | 44-49 | >49 |
+                | 50-59 | <23 | 23-28 | 29-34 | 35-40 | 41-46 | >46 |
+
+                #### ¿Cómo mejorar el VO2max?
+                1. **Intervalos VO2max**: 3-5 min al 95-100% FCmax, con recuperación igual
+                2. **Tempo runs**: 20-40 min al 85-90% FCmax
+                3. **Volumen base**: Más kilómetros en Z2 aumentan el VO2max gradualmente
+                4. **Consistencia**: El VO2max mejora ~5-15% en 8-12 semanas de entrenamiento
+
+                #### Limitaciones de la estimación
+                - Es una **estimación**, no una medición directa
+                - Más precisa con carreras de 5K-10K recientes
+                - Puede variar ±3-5 ml/kg/min respecto a test de laboratorio
+                """)
+
+            with st.expander("🚴 Variability Index (VI) e Intensity Factor (IF)", expanded=False):
+                st.markdown("""
+                #### Variability Index (VI)
+                El **VI** mide cuán variable es tu potencia durante un entrenamiento de ciclismo.
+
+                ```
+                VI = Potencia Normalizada / Potencia Media
+                ```
+
+                | Valor | Tipo de entrenamiento |
+                |-------|----------------------|
+                | 1.00 - 1.02 | Contrarreloj, rodillo muy constante |
+                | 1.02 - 1.06 | Ruta llana, grupo organizado |
+                | 1.06 - 1.13 | Ruta con subidas, grupo variable |
+                | 1.13 - 1.20 | Criterium, carrera con ataques |
+                | > 1.20 | MTB, carrera muy variable |
+
+                #### Intensity Factor (IF)
+                El **IF** compara tu potencia normalizada con tu FTP (umbral funcional).
+
+                ```
+                IF = Potencia Normalizada / FTP
+                ```
+
+                | Valor | Intensidad | Tipo de entrenamiento |
+                |-------|------------|----------------------|
+                | < 0.75 | Recuperación | Rodaje suave, Z1-Z2 |
+                | 0.75 - 0.85 | Resistencia | Fondo largo, Z2-Z3 |
+                | 0.85 - 0.95 | Tempo | Ritmo sostenido, Z3-Z4 |
+                | 0.95 - 1.05 | Umbral | Esfuerzo de ~1 hora, Z4 |
+                | 1.05 - 1.15 | VO2max | Intervalos duros, Z5 |
+                | > 1.15 | Anaeróbico | Sprints, esfuerzos cortos |
+
+                #### TSS (Training Stress Score)
+                El **TSS** combina duración e intensidad para cuantificar la carga:
+                ```
+                TSS = (duración_horas × IF² × 100)
+                ```
+
+                | TSS | Recuperación necesaria |
+                |-----|----------------------|
+                | < 150 | Recuperación en 24h |
+                | 150 - 300 | Algo de fatiga residual al día siguiente |
+                | 300 - 450 | Fatiga notable, 2 días para recuperar |
+                | > 450 | Fatiga severa, varios días de recuperación |
+                """)
+
+            with st.expander("🏆 Predicciones de Carrera - Fórmula de Riegel", expanded=False):
+                st.markdown("""
+                #### ¿Cómo funcionan las predicciones?
+                Usamos la **fórmula de Riegel** (1981), validada científicamente para predecir
+                tiempos de carrera basándose en un resultado conocido.
+
+                ```
+                T2 = T1 × (D2 / D1)^1.06
+                ```
+
+                Donde:
+                - T1 = Tiempo conocido
+                - D1 = Distancia conocida
+                - T2 = Tiempo predicho
+                - D2 = Distancia objetivo
+                - 1.06 = Factor de fatiga (varía entre 1.05-1.08)
+
+                #### Precisión de las predicciones
+                | Predicción | Precisión típica |
+                |------------|------------------|
+                | 5K → 10K | ±1-2% |
+                | 10K → Media Maratón | ±2-3% |
+                | Media → Maratón | ±3-5% |
+                | 5K → Maratón | ±5-8% |
+
+                #### Factores que afectan la precisión
+                1. **Distancia base**: Cuanto más cercana a la objetivo, más precisa
+                2. **Recencia**: Carreras de los últimos 2-3 meses son más relevantes
+                3. **Condiciones**: Temperatura, altitud, viento afectan el rendimiento
+                4. **Experiencia**: Corredores experimentados predicen mejor distancias largas
+                5. **Tipo de corredor**: Velocistas vs fondistas tienen diferentes factores
+
+                #### Consejos para usar las predicciones
+                - **Sé conservador**: En tu primera maratón, añade 5-10% al tiempo predicho
+                - **Practica el ritmo**: Entrena al ritmo objetivo antes de la carrera
+                - **Nutrición**: En distancias > 90 min, la nutrición es clave
+                - **Tapering**: Descansa adecuadamente antes de la carrera objetivo
+                """)
+
+            with st.expander("📊 CTL, ATL y TSB - El Modelo PMC", expanded=False):
+                st.markdown("""
+                #### El Modelo de Gestión del Rendimiento (PMC)
+                El **Performance Management Chart** usa tres métricas clave para modelar
+                tu estado de forma y fatiga.
+
+                #### CTL - Chronic Training Load (Fitness)
+                Tu **forma física** acumulada. Media móvil exponencial de 42 días de TRIMP.
+                ```
+                CTL_hoy = CTL_ayer × 0.976 + TRIMP_hoy × 0.024
+                ```
+
+                | CTL | Nivel |
+                |-----|-------|
+                | < 40 | Principiante / Desentrenado |
+                | 40 - 70 | Recreativo activo |
+                | 70 - 100 | Aficionado serio |
+                | 100 - 130 | Competidor amateur |
+                | > 130 | Élite / Profesional |
+
+                #### ATL - Acute Training Load (Fatigue)
+                Tu **fatiga** reciente. Media móvil exponencial de 7 días de TRIMP.
+                ```
+                ATL_hoy = ATL_ayer × 0.857 + TRIMP_hoy × 0.143
+                ```
+
+                #### TSB - Training Stress Balance (Form)
+                Tu **forma actual** = Fitness - Fatiga
+                ```
+                TSB = CTL - ATL
+                ```
+
+                | TSB | Estado | Recomendación |
+                |-----|--------|---------------|
+                | < -30 | Muy fatigado | Descanso obligatorio |
+                | -30 a -10 | Fatigado | Entrenamiento suave |
+                | -10 a +5 | Forma óptima | Ideal para competir |
+                | +5 a +15 | Fresco | Bueno para competir |
+                | +15 a +25 | Muy fresco | Posible pérdida de forma |
+                | > +25 | Desentrenado | Necesitas entrenar más |
+
+                #### Planificación con TSB
+                - **Competición importante**: TSB entre +5 y +15
+                - **Entrenamiento normal**: TSB entre -20 y +5
+                - **Bloque de carga**: TSB puede bajar a -30
+                - **Semana de descarga**: Subir TSB 10-15 puntos
+                """)
+
+            with st.expander("❤️ TRIMP - Training Impulse", expanded=False):
+                st.markdown("""
+                #### ¿Qué es TRIMP?
+                El **TRIMP** (Training Impulse) es la unidad base para cuantificar la carga
+                de entrenamiento. Combina duración e intensidad en un solo número.
+
+                #### Fórmula de Banister
+                ```
+                TRIMP = Duración (min) × ΔHR × Factor_intensidad
+
+                Donde:
+                ΔHR = (FC_media - FC_reposo) / (FC_máx - FC_reposo)
+                Factor_hombres = 0.64 × e^(1.92 × ΔHR)
+                Factor_mujeres = 0.86 × e^(1.67 × ΔHR)
+                ```
+
+                #### Valores típicos de TRIMP
+                | Actividad | TRIMP aproximado |
+                |-----------|------------------|
+                | Rodaje suave 30 min | 20-40 |
+                | Rodaje moderado 60 min | 60-100 |
+                | Entrenamiento intenso 60 min | 100-150 |
+                | Carrera 10K competición | 80-120 |
+                | Media maratón | 150-250 |
+                | Maratón | 300-500 |
+
+                #### Carga semanal recomendada
+                | Nivel | TRIMP semanal |
+                |-------|---------------|
+                | Principiante | 200-400 |
+                | Intermedio | 400-700 |
+                | Avanzado | 700-1000 |
+                | Élite | 1000-1500+ |
+
+                #### Limitaciones del TRIMP
+                - No captura bien el entrenamiento de fuerza
+                - Puede subestimar intervalos muy cortos
+                - Requiere datos precisos de FC
+                - No diferencia entre tipos de estrés (muscular vs cardiovascular)
+                """)
+        else:
+            st.warning("⚠️ Por favor sube los datos de Garmin en la pestaña 'Subir Datos' primero")
+            st.info("""
+            ### 📊 Métricas Avanzadas Disponibles
+
+            Una vez subas tus datos, tendrás acceso a:
+
+            - **ACWR (Acute:Chronic Workload Ratio)**: Prevención de lesiones
+            - **Ramp Rate**: Tasa de progresión segura
+            - **Monotonía y Strain**: Gestión de fatiga (Foster)
+            - **Efficiency Factor**: Eficiencia aeróbica
+            - **Decoupling**: Resistencia aeróbica
+            - **VO2max Estimado**: Capacidad aeróbica
+            - **Predicciones de Carrera**: Tiempos estimados para 5K, 10K, Media y Maratón
+            - **Alertas Automáticas**: Avisos de riesgo de lesión o sobreentrenamiento
+            - **Recomendación Diaria**: Qué tipo de entrenamiento hacer hoy
+            """)
 
     # Tab 3: Training Zones
     with tab3:
