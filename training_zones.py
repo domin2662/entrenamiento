@@ -276,7 +276,7 @@ class TrainingZones:
     def get_zone_for_workout(self, workout_type: str) -> dict:
         """Get recommended zone for a specific workout type."""
         zones = self.calculate_zones()
-        
+
         workout_zones = {
             'Easy Run': zones['zone_2'],
             'Recovery Run': zones['zone_1'],
@@ -288,6 +288,127 @@ class TrainingZones:
             'Fartlek': zones['zone_3'],
             'Rest': None
         }
-        
+
         return workout_zones.get(workout_type, zones['zone_2'])
+
+    def calculate_power_zones(self, ftp: int) -> dict:
+        """
+        Calculate 7-zone cycling power zones based on FTP (Coggan/Allen model).
+
+        Args:
+            ftp: Functional Threshold Power in watts
+
+        Returns:
+            Dictionary with power zone ranges
+        """
+        zones = {
+            'zone_1': {
+                'name': 'Recuperación Activa',
+                'name_en': 'Active Recovery',
+                'min_watts': 0,
+                'max_watts': int(ftp * 0.55),
+                'min_pct': 0,
+                'max_pct': 55,
+                'description': 'Recuperación, pedaleo suave'
+            },
+            'zone_2': {
+                'name': 'Resistencia',
+                'name_en': 'Endurance',
+                'min_watts': int(ftp * 0.56),
+                'max_watts': int(ftp * 0.75),
+                'min_pct': 56,
+                'max_pct': 75,
+                'description': 'Base aeróbica, fondos'
+            },
+            'zone_3': {
+                'name': 'Tempo',
+                'name_en': 'Tempo',
+                'min_watts': int(ftp * 0.76),
+                'max_watts': int(ftp * 0.90),
+                'min_pct': 76,
+                'max_pct': 90,
+                'description': 'Ritmo sostenible, esfuerzo moderado'
+            },
+            'zone_4': {
+                'name': 'Umbral',
+                'name_en': 'Threshold',
+                'min_watts': int(ftp * 0.91),
+                'max_watts': int(ftp * 1.05),
+                'min_pct': 91,
+                'max_pct': 105,
+                'description': 'Umbral funcional, esfuerzo intenso sostenible ~1h'
+            },
+            'zone_5': {
+                'name': 'VO2max',
+                'name_en': 'VO2max',
+                'min_watts': int(ftp * 1.06),
+                'max_watts': int(ftp * 1.20),
+                'min_pct': 106,
+                'max_pct': 120,
+                'description': 'Intervalos 3-8 min, máxima capacidad aeróbica'
+            },
+            'zone_6': {
+                'name': 'Capacidad Anaeróbica',
+                'name_en': 'Anaerobic Capacity',
+                'min_watts': int(ftp * 1.21),
+                'max_watts': int(ftp * 1.50),
+                'min_pct': 121,
+                'max_pct': 150,
+                'description': 'Esfuerzos cortos 30s-3min'
+            },
+            'zone_7': {
+                'name': 'Potencia Neuromuscular',
+                'name_en': 'Neuromuscular Power',
+                'min_watts': int(ftp * 1.51),
+                'max_watts': int(ftp * 2.00),
+                'min_pct': 151,
+                'max_pct': 200,
+                'description': 'Sprints máximos <30s'
+            }
+        }
+        return zones
+
+    def calculate_swim_zones(self, css_pace_100m: float) -> dict:
+        """
+        Calculate swimming training zones based on CSS (Critical Swim Speed).
+
+        Args:
+            css_pace_100m: CSS pace in seconds per 100m
+
+        Returns:
+            Dictionary with swim zone ranges in sec/100m
+        """
+        zones = {
+            'zone_1': {
+                'name': 'Recuperación',
+                'min_pace': int(css_pace_100m * 1.20),
+                'max_pace': int(css_pace_100m * 1.30),
+                'description': 'Nado muy suave, técnica'
+            },
+            'zone_2': {
+                'name': 'Resistencia Aeróbica',
+                'min_pace': int(css_pace_100m * 1.10),
+                'max_pace': int(css_pace_100m * 1.19),
+                'description': 'Base aeróbica, fondos'
+            },
+            'zone_3': {
+                'name': 'Tempo',
+                'min_pace': int(css_pace_100m * 1.02),
+                'max_pace': int(css_pace_100m * 1.09),
+                'description': 'Ritmo sostenido, umbral aeróbico'
+            },
+            'zone_4': {
+                'name': 'Umbral',
+                'min_pace': int(css_pace_100m * 0.96),
+                'max_pace': int(css_pace_100m * 1.01),
+                'description': 'CSS, esfuerzo intenso sostenible'
+            },
+            'zone_5': {
+                'name': 'VO2max',
+                'min_pace': int(css_pace_100m * 0.88),
+                'max_pace': int(css_pace_100m * 0.95),
+                'description': 'Series rápidas, capacidad aeróbica máxima'
+            }
+        }
+        return zones
 

@@ -18,6 +18,8 @@ import zipfile
 # Import local modules
 from training_zones import TrainingZones
 from plan_generator import TrainingPlanGenerator
+from cycling_plan_generator import CyclingPlanGenerator
+from triathlon_plan_generator import TriathlonPlanGenerator
 from garmin_analyzer import GarminDataAnalyzer, PowerProfileAnalyzer
 from garmin_fit_exporter import GarminFitExporter
 from calendar_view import TrainingCalendarView
@@ -98,24 +100,72 @@ def main():
         }
         selected_intensity = intensity_map[training_intensity]
 
+        st.subheader("🏅 Tipo de Deporte")
+        sport_type = st.selectbox(
+            "Selecciona tu deporte",
+            options=["🏃 Carrera", "🚲 Ciclismo", "🏊🚲🏃 Triatlón"],
+            index=0
+        )
+
+        # Cycling / Triathlon specific inputs
+        ftp_value = 200
+        css_pace_100m = 105
+        cycling_weekly_km = None
+        cycling_weekly_elevation = None
+        if "Ciclismo" in sport_type or "Triatlón" in sport_type:
+            st.subheader("⚡ Datos Específicos de Ciclismo")
+            ftp_value = st.number_input("FTP (watts)", min_value=50, max_value=500, value=200, step=5)
+
+        if "Ciclismo" in sport_type:
+            st.subheader("📏 Volumen Semanal de Ciclismo")
+            st.caption("Define tu volumen semanal objetivo. Los límites se ajustan según tu nivel de forma.")
+            cycling_weekly_km = st.number_input(
+                "Kilómetros semanales objetivo",
+                min_value=50, max_value=700, value=180, step=10,
+                help="Kilómetros totales que deseas recorrer por semana. Se ajustará automáticamente según la fase de entrenamiento y tu nivel de forma."
+            )
+            cycling_weekly_elevation = st.number_input(
+                "Desnivel acumulado semanal (m)",
+                min_value=0, max_value=8000, value=1200, step=100,
+                help="Metros de ascenso acumulado semanal. Influye especialmente en los entrenamientos de 'Fondo Largo' y 'Subidas'."
+            )
+
+        if "Triatlón" in sport_type:
+            st.subheader("🏊 Datos de Natación")
+            css_min = st.number_input("CSS Ritmo 100m (min)", min_value=0, max_value=5, value=1, key="css_min")
+            css_sec = st.number_input("CSS Ritmo 100m (seg)", min_value=0, max_value=59, value=45, key="css_sec")
+            css_pace_100m = css_min * 60 + css_sec
+
         st.subheader("Tipos de Entrenamiento Preferidos")
         st.caption("Selecciona los tipos de entrenamiento que más te gustan")
 
-        pref_easy_runs = st.checkbox("Rodajes Suaves", value=True)
-        pref_tempo_runs = st.checkbox("Series Tempo", value=True)
-        pref_intervals = st.checkbox("Intervalos", value=True)
-        pref_long_runs = st.checkbox("Tiradas Largas", value=True)
-        pref_hill_runs = st.checkbox("Cuestas", value=False)
-        pref_fartlek = st.checkbox("Fartlek", value=False)
-
-        preferred_workouts = {
-            "easy": pref_easy_runs,
-            "tempo": pref_tempo_runs,
-            "intervals": pref_intervals,
-            "long": pref_long_runs,
-            "hills": pref_hill_runs,
-            "fartlek": pref_fartlek
-        }
+        if "Carrera" in sport_type:
+            pref_easy_runs = st.checkbox("Rodajes Suaves", value=True)
+            pref_tempo_runs = st.checkbox("Series Tempo", value=True)
+            pref_intervals = st.checkbox("Intervalos", value=True)
+            pref_long_runs = st.checkbox("Tiradas Largas", value=True)
+            pref_hill_runs = st.checkbox("Cuestas", value=False)
+            pref_fartlek = st.checkbox("Fartlek", value=False)
+            preferred_workouts = {
+                "easy": pref_easy_runs, "tempo": pref_tempo_runs,
+                "intervals": pref_intervals, "long": pref_long_runs,
+                "hills": pref_hill_runs, "fartlek": pref_fartlek
+            }
+        elif "Ciclismo" in sport_type:
+            pref_endurance = st.checkbox("Rodaje Resistencia", value=True)
+            pref_tempo_ride = st.checkbox("Rodaje Tempo", value=True)
+            pref_sweet_spot = st.checkbox("Sweet Spot", value=True)
+            pref_threshold = st.checkbox("Intervalos Umbral", value=True)
+            pref_vo2max = st.checkbox("Intervalos VO2max", value=False)
+            pref_hills = st.checkbox("Subidas", value=False)
+            preferred_workouts = {
+                "endurance": pref_endurance, "tempo": pref_tempo_ride,
+                "sweet_spot": pref_sweet_spot, "threshold": pref_threshold,
+                "vo2max": pref_vo2max, "sprints": pref_hills
+            }
+        else:  # Triathlon
+            st.caption("El plan incluirá natación, ciclismo y carrera automáticamente")
+            preferred_workouts = {}
 
         # Optional inputs
         st.subheader("Opcional: Marcas Personales (Últimos 4-5 meses)")
@@ -1867,29 +1917,48 @@ def main():
 
         with col_goal1:
             target_date = st.date_input(
-                "Fecha Objetivo de la Carrera",
+                "Fecha Objetivo del Evento",
                 min_value=datetime.now().date() + timedelta(days=28),
                 value=datetime.now().date() + timedelta(days=84)
             )
 
         with col_goal2:
-            distance_goal = st.selectbox(
-                "Distancia de la Carrera",
-                options=["10K", "15K", "Media Maratón (21K)", "Maratón (42K)"],
-                index=2
-            )
-
-        # Map distance
-        distance_map = {
-            "10K": 10,
-            "15K": 15,
-            "Media Maratón (21K)": 21.1,
-            "Maratón (42K)": 42.2
-        }
-        target_distance = distance_map[distance_goal]
+            if "Carrera" in sport_type:
+                distance_goal = st.selectbox(
+                    "Distancia de la Carrera",
+                    options=["10K", "15K", "Media Maratón (21K)", "Maratón (42K)"],
+                    index=2
+                )
+                distance_map = {
+                    "10K": 10, "15K": 15,
+                    "Media Maratón (21K)": 21.1, "Maratón (42K)": 42.2
+                }
+                target_distance = distance_map[distance_goal]
+            elif "Ciclismo" in sport_type:
+                cycling_event = st.selectbox(
+                    "Tipo de Evento Ciclista",
+                    options=["Gran Fondo", "Critérium", "Contrarreloj", "Carrera por Etapas"],
+                    index=0
+                )
+                cycling_event_map = {
+                    "Gran Fondo": "gran_fondo", "Critérium": "criterium",
+                    "Contrarreloj": "contrarreloj", "Carrera por Etapas": "etapas"
+                }
+                target_distance = 0  # Cycling uses hours, not distance
+            else:  # Triathlon
+                triathlon_event = st.selectbox(
+                    "Distancia de Triatlón",
+                    options=["Sprint", "Olímpico", "Medio Ironman (70.3)", "Ironman"],
+                    index=1
+                )
+                triathlon_event_map = {
+                    "Sprint": "sprint", "Olímpico": "olimpico",
+                    "Medio Ironman (70.3)": "medio_ironman", "Ironman": "ironman"
+                }
+                target_distance = 0
 
         weeks_to_race = (target_date - datetime.now().date()).days // 7
-        st.info(f"📆 **{weeks_to_race} semanas** hasta tu carrera!")
+        st.info(f"📆 **{weeks_to_race} semanas** hasta tu evento!")
 
         if weeks_to_race < 4:
             st.warning("⚠️ Se recomiendan al menos 4 semanas para una preparación adecuada")
@@ -1902,24 +1971,87 @@ def main():
                 current_fitness = {
                     'avg_weekly_distance': 20,
                     'fitness_level': 'Principiante',
-                    'training_load': 50
+                    'training_load': 50,
+                    'avg_weekly_hours': 6
                 }
 
-            # Generate plan
+            # Generate plan based on sport type
             zones_calc = TrainingZones(max_hr, vo2_max, age, weight)
             zones = zones_calc.calculate_zones()
 
-            generator = TrainingPlanGenerator(
-                target_distance=target_distance,
-                target_date=target_date,
-                current_fitness=current_fitness,
-                training_zones=zones,
-                intensity_preference=selected_intensity,
-                preferred_workouts=preferred_workouts,
-                training_days_per_week=training_days_per_week,
-                best_5k_time=best_5k_time,
-                best_10k_time=best_10k_time
-            )
+            if "Carrera" in sport_type:
+                generator = TrainingPlanGenerator(
+                    target_distance=target_distance,
+                    target_date=target_date,
+                    current_fitness=current_fitness,
+                    training_zones=zones,
+                    intensity_preference=selected_intensity,
+                    preferred_workouts=preferred_workouts,
+                    training_days_per_week=training_days_per_week,
+                    best_5k_time=best_5k_time,
+                    best_10k_time=best_10k_time
+                )
+            elif "Ciclismo" in sport_type:
+                power_zones = zones_calc.calculate_power_zones(ftp_value)
+                generator = CyclingPlanGenerator(
+                    target_event=cycling_event_map[cycling_event],
+                    target_date=target_date,
+                    current_fitness=current_fitness,
+                    training_zones=zones,
+                    ftp=ftp_value,
+                    power_zones=power_zones,
+                    intensity_preference=selected_intensity,
+                    preferred_workouts=preferred_workouts,
+                    training_days_per_week=training_days_per_week,
+                    weekly_km=cycling_weekly_km,
+                    weekly_elevation_gain=cycling_weekly_elevation
+                )
+                # Mostrar info de límites de seguridad aplicados
+                limits = generator.get_volume_limits()
+                if cycling_weekly_km and cycling_weekly_km != limits['current_weekly_km']:
+                    st.warning(
+                        f"⚠️ Km semanales ajustados a {limits['current_weekly_km']} km "
+                        f"(límite seguro para nivel {limits['fitness_level']}: "
+                        f"{limits['km']['min']}-{limits['km']['max']} km)"
+                    )
+                if cycling_weekly_elevation and cycling_weekly_elevation != limits['current_weekly_elevation']:
+                    st.warning(
+                        f"⚠️ Desnivel semanal ajustado a {limits['current_weekly_elevation']} m "
+                        f"(límite seguro para nivel {limits['fitness_level']}: "
+                        f"{limits['elevation']['min']}-{limits['elevation']['max']} m)"
+                    )
+            else:  # Triathlon
+                power_zones = zones_calc.calculate_power_zones(ftp_value)
+                swim_zones = zones_calc.calculate_swim_zones(css_pace_100m)
+                # Calculate run paces from best times or defaults
+                run_paces = {'suave': 6.5, 'aerobico': 6.0, 'umbral': 5.3, '5k': 4.8}
+                if best_5k_time:
+                    try:
+                        parts = best_5k_time.split(':')
+                        total_min = int(parts[0]) + int(parts[1]) / 60
+                        pace_5k = total_min / 5.0
+                        run_paces = {
+                            'suave': pace_5k * 1.35,
+                            'aerobico': pace_5k * 1.25,
+                            'umbral': pace_5k * 1.10,
+                            '5k': pace_5k
+                        }
+                    except (ValueError, IndexError):
+                        pass
+                generator = TriathlonPlanGenerator(
+                    target_event=triathlon_event_map[triathlon_event],
+                    target_date=target_date,
+                    current_fitness=current_fitness,
+                    training_zones=zones,
+                    ftp=ftp_value,
+                    power_zones=power_zones,
+                    swim_zones=swim_zones,
+                    css_pace_100m=css_pace_100m,
+                    run_paces=run_paces,
+                    intensity_preference=selected_intensity,
+                    preferred_workouts=preferred_workouts,
+                    training_days_per_week=training_days_per_week
+                )
 
             plan = generator.generate_plan()
             st.session_state.training_plan = plan
@@ -1932,14 +2064,62 @@ def main():
             st.subheader("📊 Resumen del Plan de Entrenamiento")
 
             # Summary metrics
-            col_m1, col_m2, col_m3 = st.columns(3)
+            total_distance = sum(w['total_distance'] for w in plan['weeks'])
+            actual_peak_distance = max((w['total_distance'] for w in plan['weeks']), default=0)
+            total_workouts = sum(
+                1 for w in plan['weeks']
+                for wo in w.get('workouts', {}).values()
+                if wo.get('type') != 'Rest'
+            )
+            # Estimar duración total desde segmentos
+            total_duration_min = 0
+            for w in plan['weeks']:
+                for wo in w.get('workouts', {}).values():
+                    if wo.get('type') == 'Rest':
+                        continue
+                    segs = wo.get('segments', [])
+                    if segs:
+                        for seg in segs:
+                            if seg.get('duration_min'):
+                                total_duration_min += seg['duration_min']
+                            elif seg.get('distance_km'):
+                                pace_str = seg.get('pace', '')
+                                pace_val = 0
+                                if pace_str:
+                                    try:
+                                        clean = pace_str.replace('/km', '').strip()
+                                        parts = clean.split(':')
+                                        if len(parts) == 2:
+                                            pace_val = int(parts[0]) + int(parts[1]) / 60
+                                    except (ValueError, IndexError):
+                                        pass
+                                total_duration_min += seg['distance_km'] * (pace_val if pace_val else 6)
+                    else:
+                        total_duration_min += wo.get('distance', 0) * 6
+
+            # Calcular desnivel total si está disponible (plan de ciclismo)
+            total_elevation = sum(w.get('total_elevation', 0) for w in plan['weeks'])
+            is_cycling_plan = plan.get('sport_type') == 'cycling'
+
+            if is_cycling_plan:
+                col_m1, col_m2, col_m3, col_m4, col_m5, col_m6 = st.columns(6)
+            else:
+                col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+
             with col_m1:
-                total_distance = sum(w['total_distance'] for w in plan['weeks'])
-                st.metric("Distancia Total de Entrenamiento", f"{total_distance:.1f} km")
+                st.metric("📏 Distancia Total", f"{total_distance:.1f} km")
             with col_m2:
-                st.metric("Semanas Totales", len(plan['weeks']))
+                st.metric("📅 Semanas Totales", len(plan['weeks']))
             with col_m3:
-                st.metric("Distancia Semana Pico", f"{plan['peak_week_distance']:.1f} km")
+                st.metric("🏔️ Semana Pico", f"{actual_peak_distance:.1f} km")
+            with col_m4:
+                st.metric("🏃 Entrenamientos", f"{total_workouts}")
+            with col_m5:
+                total_hours = total_duration_min / 60
+                st.metric("⏱️ Duración Est.", f"{total_hours:.1f} h")
+            if is_cycling_plan:
+                with col_m6:
+                    st.metric("⛰️ Desnivel Total", f"{total_elevation:,.0f} m")
 
             # Weekly volume chart
             weekly_distances = [w['total_distance'] for w in plan['weeks']]
@@ -1948,7 +2128,7 @@ def main():
             fig_plan = px.bar(
                 x=week_numbers,
                 y=weekly_distances,
-                title='Volumen de Entrenamiento Semanal',
+                title='Volumen de Entrenamiento Semanal (km)',
                 labels={'x': 'Semana', 'y': 'Distancia (km)'}
             )
 
@@ -1956,6 +2136,19 @@ def main():
             colors = ['#FF9800' if w.get('is_recovery') else '#1E88E5' for w in plan['weeks']]
             fig_plan.update_traces(marker_color=colors)
             st.plotly_chart(fig_plan, use_container_width=True)
+
+            # Gráfico de desnivel semanal (solo ciclismo)
+            if is_cycling_plan and total_elevation > 0:
+                weekly_elevations = [w.get('total_elevation', 0) for w in plan['weeks']]
+                fig_elev = px.bar(
+                    x=week_numbers,
+                    y=weekly_elevations,
+                    title='Desnivel Acumulado Semanal (m)',
+                    labels={'x': 'Semana', 'y': 'Desnivel (m)'}
+                )
+                elev_colors = ['#FF9800' if w.get('is_recovery') else '#4CAF50' for w in plan['weeks']]
+                fig_elev.update_traces(marker_color=elev_colors)
+                st.plotly_chart(fig_elev, use_container_width=True)
 
             # Detailed weekly view
             st.subheader("📋 Calendario Semanal")
@@ -1971,7 +2164,9 @@ def main():
             # Week header
             week_type = "🔄 Semana de Recuperación" if week_data.get('is_recovery') else "💪 Semana de Entrenamiento"
             st.markdown(f"### {week_type}")
-            st.markdown(f"**Semana {selected_week}** | Total: {week_data['total_distance']:.1f} km")
+            week_elevation = week_data.get('total_elevation', 0)
+            elev_text = f" | ⛰️ Desnivel: {week_elevation:,} m" if week_elevation > 0 else ""
+            st.markdown(f"**Semana {selected_week}** | Total: {week_data['total_distance']:.1f} km{elev_text}")
 
             # Daily workouts
             days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -1980,13 +2175,22 @@ def main():
 
             workout_translations = {
                 'Rest': 'Descanso',
-                'Easy Run': 'Rodaje Suave',
-                'Tempo Run': 'Series Tempo',
-                'Intervals': 'Intervalos',
-                'Long Run': 'Tirada Larga',
+                # Running
+                'Easy Run': 'Rodaje Suave', 'Tempo Run': 'Series Tempo',
+                'Intervals': 'Intervalos', 'Long Run': 'Tirada Larga',
                 'Recovery Run': 'Rodaje Recuperación',
-                'Hill Repeats': 'Cuestas',
-                'Fartlek': 'Fartlek'
+                'Hill Repeats': 'Cuestas', 'Fartlek': 'Fartlek',
+                # Cycling
+                'Endurance Ride': 'Rodaje Resistencia', 'Recovery Ride': 'Rodaje Recuperación',
+                'Long Ride': 'Fondo Largo Bici', 'Tempo Ride': 'Rodaje Tempo',
+                'Sweet Spot': 'Sweet Spot', 'Threshold Intervals': 'Intervalos Umbral',
+                'VO2max Intervals': 'Intervalos VO2max', 'Hill Ride': 'Subidas',
+                # Swimming
+                'Easy Swim': 'Natación Suave', 'Threshold Swim': 'Natación Umbral',
+                'Interval Swim': 'Natación Intervalos', 'Open Water Swim': 'Aguas Abiertas',
+                # Triathlon
+                'Sweet Spot Ride': 'Sweet Spot Bici', 'Intervals Run': 'Series Carrera',
+                'Brick Workout': 'Ent. Brick', 'Transition Practice': 'Transiciones',
             }
 
             cols = st.columns(7)
@@ -1998,23 +2202,39 @@ def main():
                     workout_type_es = workout_translations.get(workout_type, workout_type)
                     workout_colors = {
                         'Rest': '#9E9E9E',
-                        'Easy Run': '#4CAF50',
-                        'Tempo Run': '#FF9800',
-                        'Intervals': '#F44336',
-                        'Long Run': '#2196F3',
-                        'Recovery Run': '#8BC34A',
-                        'Hill Repeats': '#9C27B0',
-                        'Fartlek': '#00BCD4'
+                        # Running
+                        'Easy Run': '#4CAF50', 'Tempo Run': '#FF9800',
+                        'Intervals': '#F44336', 'Long Run': '#2196F3',
+                        'Recovery Run': '#8BC34A', 'Hill Repeats': '#9C27B0',
+                        'Fartlek': '#00BCD4',
+                        # Cycling
+                        'Endurance Ride': '#43A047', 'Recovery Ride': '#81C784',
+                        'Long Ride': '#1565C0', 'Tempo Ride': '#EF6C00',
+                        'Sweet Spot': '#FFA000', 'Threshold Intervals': '#C62828',
+                        'VO2max Intervals': '#AD1457', 'Hill Ride': '#6A1B9A',
+                        # Swimming
+                        'Easy Swim': '#00ACC1', 'Threshold Swim': '#00838F',
+                        'Interval Swim': '#006064', 'Open Water Swim': '#0097A7',
+                        # Triathlon
+                        'Sweet Spot Ride': '#FFA000', 'Intervals Run': '#F44336',
+                        'Brick Workout': '#D81B60', 'Transition Practice': '#7B1FA2',
                     }
 
                     color = workout_colors.get(workout_type, '#607D8B')
+                    sport = workout.get('sport', '')
+                    sport_icon = {'swim': '🏊', 'bike': '🚲', 'run': '🏃', 'brick': '🔄'}.get(sport, '')
+                    dist = workout.get('distance', 0)
+                    dist_label = f"{dist:.1f} km" if dist else ""
+                    elev_gain = workout.get('elevation_gain', 0)
+                    elev_label = f"⛰️ {elev_gain}m" if elev_gain > 0 else ""
 
                     st.markdown(f"""
                     <div style='background-color: {color}; color: white; padding: 10px;
                                 border-radius: 8px; text-align: center; min-height: 120px;'>
                         <strong>{days_es[day]}</strong><br>
-                        <small>{workout_type_es}</small><br>
-                        {workout.get('distance', 0):.1f} km<br>
+                        <small>{sport_icon} {workout_type_es}</small><br>
+                        {dist_label}<br>
+                        {elev_label}<br>
                         <small>Zona {workout.get('zone', '-')}</small>
                     </div>
                     """, unsafe_allow_html=True)
@@ -2027,7 +2247,11 @@ def main():
             for day, workout in week_data['workouts'].items():
                 if workout.get('type') != 'Rest':
                     workout_type_es = workout.get('type_es', workout_translations.get(workout.get('type', 'Workout'), workout.get('type', 'Entrenamiento')))
-                    with st.expander(f"📌 {days_full_es.get(day, day)}: {workout_type_es} ({workout.get('distance', 0):.1f} km)"):
+                    sport = workout.get('sport', '')
+                    sport_icon = {'swim': '🏊', 'bike': '🚲', 'run': '🏃', 'brick': '🔄'}.get(sport, '📌')
+                    dist = workout.get('distance', 0)
+                    dist_str = f"({dist:.1f} km)" if dist else ""
+                    with st.expander(f"{sport_icon} {days_full_es.get(day, day)}: {workout_type_es} {dist_str}"):
 
                         # Resumen general
                         col_w1, col_w2 = st.columns(2)
@@ -2038,6 +2262,9 @@ def main():
                         with col_w2:
                             st.markdown(f"**❤️ Zona FC principal:** {workout.get('zone', 'N/A')}")
                             st.markdown(f"**💓 Rango FC:** {workout.get('hr_min', 'N/A')} - {workout.get('hr_max', 'N/A')} ppm")
+                            wo_elev = workout.get('elevation_gain', 0)
+                            if wo_elev > 0:
+                                st.markdown(f"**⛰️ Desnivel:** {wo_elev} m")
 
                         # Segmentos detallados
                         segments = workout.get('segments', [])
@@ -2070,7 +2297,13 @@ def main():
                                         st.markdown(f"⛰️ **Pendiente:** {segment['incline']}")
 
                                 with col_s2:
-                                    st.markdown(f"🏃 **Ritmo:** {segment.get('pace', 'N/A')}")
+                                    pace = segment.get('pace', 'N/A')
+                                    if isinstance(pace, str) and ('W' in pace or 'FTP' in pace):
+                                        st.markdown(f"⚡ **Potencia:** {pace}")
+                                    elif isinstance(pace, str) and '/100m' in pace:
+                                        st.markdown(f"🏊 **Ritmo:** {pace}")
+                                    else:
+                                        st.markdown(f"🏃 **Ritmo:** {pace}")
                                     if segment.get('pace_range') and segment.get('pace_range') != segment.get('pace'):
                                         st.markdown(f"📊 **Rango:** {segment['pace_range']}")
                                     if segment.get('fast_pace'):
@@ -2137,13 +2370,20 @@ def main():
 
             workout_legend = [
                 ('Descanso', '#E0E0E0'),
-                ('Rodaje Suave', '#4CAF50'),
-                ('Series Tempo', '#FF9800'),
-                ('Intervalos', '#F44336'),
-                ('Tirada Larga', '#2196F3'),
-                ('Recuperación', '#8BC34A'),
-                ('Cuestas', '#9C27B0'),
-                ('Fartlek', '#00BCD4')
+                # Running
+                ('Rodaje Suave', '#4CAF50'), ('Series Tempo', '#FF9800'),
+                ('Intervalos', '#F44336'), ('Tirada Larga', '#2196F3'),
+                ('Recuperación', '#8BC34A'), ('Cuestas', '#9C27B0'),
+                ('Fartlek', '#00BCD4'),
+                # Cycling
+                ('Rodaje Resistencia', '#43A047'), ('Fondo Largo Bici', '#1565C0'),
+                ('Rodaje Tempo', '#EF6C00'), ('Sweet Spot', '#FFA000'),
+                ('Intervalos Umbral', '#C62828'), ('Intervalos VO2max', '#AD1457'),
+                # Swimming
+                ('Natación Suave', '#00ACC1'), ('Natación Umbral', '#00838F'),
+                ('Natación Intervalos', '#006064'), ('Aguas Abiertas', '#0097A7'),
+                # Triathlon
+                ('Ent. Brick', '#D81B60'), ('Transiciones', '#7B1FA2'),
             ]
 
             for i, (name, color) in enumerate(workout_legend):

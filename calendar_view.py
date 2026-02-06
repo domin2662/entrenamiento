@@ -15,6 +15,7 @@ class TrainingCalendarView:
 
     # Colores para tipos de entrenamiento
     WORKOUT_COLORS = {
+        # Running
         'Rest': '#E0E0E0',
         'Easy Run': '#4CAF50',
         'Tempo Run': '#FF9800',
@@ -22,11 +23,31 @@ class TrainingCalendarView:
         'Long Run': '#2196F3',
         'Recovery Run': '#8BC34A',
         'Hill Repeats': '#9C27B0',
-        'Fartlek': '#00BCD4'
+        'Fartlek': '#00BCD4',
+        # Cycling
+        'Endurance Ride': '#43A047',
+        'Recovery Ride': '#81C784',
+        'Long Ride': '#1565C0',
+        'Tempo Ride': '#EF6C00',
+        'Sweet Spot': '#FFA000',
+        'Threshold Intervals': '#C62828',
+        'VO2max Intervals': '#AD1457',
+        'Hill Ride': '#6A1B9A',
+        # Swimming
+        'Easy Swim': '#00ACC1',
+        'Threshold Swim': '#00838F',
+        'Interval Swim': '#006064',
+        'Open Water Swim': '#0097A7',
+        # Triathlon Brick/Transition
+        'Sweet Spot Ride': '#FFA000',
+        'Intervals Run': '#F44336',
+        'Brick Workout': '#D81B60',
+        'Transition Practice': '#7B1FA2',
     }
 
     # Traducciones al español
     WORKOUT_TRANSLATIONS = {
+        # Running
         'Rest': 'Descanso',
         'Easy Run': 'Rodaje Suave',
         'Tempo Run': 'Series Tempo',
@@ -34,7 +55,26 @@ class TrainingCalendarView:
         'Long Run': 'Tirada Larga',
         'Recovery Run': 'Recuperación',
         'Hill Repeats': 'Cuestas',
-        'Fartlek': 'Fartlek'
+        'Fartlek': 'Fartlek',
+        # Cycling
+        'Endurance Ride': 'Rodaje Resistencia',
+        'Recovery Ride': 'Rodaje Recuperación',
+        'Long Ride': 'Fondo Largo Bici',
+        'Tempo Ride': 'Rodaje Tempo',
+        'Sweet Spot': 'Sweet Spot',
+        'Threshold Intervals': 'Intervalos Umbral',
+        'VO2max Intervals': 'Intervalos VO2max',
+        'Hill Ride': 'Subidas',
+        # Swimming
+        'Easy Swim': 'Natación Suave',
+        'Threshold Swim': 'Natación Umbral',
+        'Interval Swim': 'Natación Intervalos',
+        'Open Water Swim': 'Aguas Abiertas',
+        # Triathlon
+        'Sweet Spot Ride': 'Sweet Spot Bici',
+        'Intervals Run': 'Series Carrera',
+        'Brick Workout': 'Ent. Brick',
+        'Transition Practice': 'Transiciones',
     }
 
     DAYS_ES = {
@@ -101,9 +141,23 @@ class TrainingCalendarView:
 
                 if workout.get('type') != 'Rest':
                     week_summary['workouts_count'] += 1
-                    # Estimar duración basada en distancia y ritmo promedio
                     distance = workout.get('distance', 0)
-                    week_summary['total_duration_min'] += distance * 6  # ~6 min/km promedio
+                    # Calcular duración desde segmentos si están disponibles
+                    segments = workout.get('segments', [])
+                    duration = 0
+                    if segments:
+                        for seg in segments:
+                            if seg.get('duration_min'):
+                                duration += seg['duration_min']
+                            elif seg.get('distance_km'):
+                                pace_min = self._parse_pace(seg.get('pace', ''))
+                                if pace_min:
+                                    duration += seg['distance_km'] * pace_min
+                                else:
+                                    duration += seg['distance_km'] * 6  # fallback ~6 min/km
+                    else:
+                        duration = distance * 6  # fallback ~6 min/km
+                    week_summary['total_duration_min'] += duration
 
             self.weekly_summaries.append(week_summary)
 
@@ -219,13 +273,16 @@ class TrainingCalendarView:
                 </div>
                 """, unsafe_allow_html=True)
             else:
-                type_es = self.WORKOUT_TRANSLATIONS.get(workout_type, workout_type)[:8]
+                type_es = self.WORKOUT_TRANSLATIONS.get(workout_type, workout_type)[:10]
+                sport = workout.get('sport', '')
+                sport_icon = {'swim': '🏊', 'bike': '🚲', 'run': '🏃', 'brick': '🔄'}.get(sport, '')
+                dist_label = f"{distance:.1f}km" if distance else ""
                 st.markdown(f"""
                 <div style='background: {color}; color: white; padding: 8px;
                             border-radius: 8px; text-align: center; min-height: 70px;'>
                     <strong>{day_number}</strong><br>
-                    <small>{type_es}</small><br>
-                    <small>{distance:.1f}km</small>
+                    <small>{sport_icon} {type_es}</small><br>
+                    <small>{dist_label}</small>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -321,9 +378,14 @@ class TrainingCalendarView:
             day_es = self.DAYS_ES.get(day, day)
             type_es = workout.get('type_es', self.WORKOUT_TRANSLATIONS.get(workout_type, workout_type))
             color = self.WORKOUT_COLORS.get(workout_type, '#607D8B')
+            sport = workout.get('sport', '')
+            sport_icon = {'swim': '🏊', 'bike': '🚲', 'run': '🏃', 'brick': '🔄'}.get(sport, '📌')
+
+            dist = workout.get('distance', 0)
+            dist_str = f"{dist:.1f} km" if dist else ""
 
             with st.expander(
-                f"📌 {day_es}: {type_es} - {workout.get('distance', 0):.1f} km",
+                f"{sport_icon} {day_es}: {type_es} {('- ' + dist_str) if dist_str else ''}",
                 expanded=False
             ):
                 # Información general
@@ -380,12 +442,22 @@ class TrainingCalendarView:
                 st.markdown(f"🔁 **Reps:** {segment['reps']} x {rep_val}{unit}")
 
         with col2:
-            st.markdown(f"🏃 **Ritmo:** {segment.get('pace', 'N/A')}")
+            pace = segment.get('pace', 'N/A')
+            # Detect power-based segments (contain 'W' for watts)
+            if isinstance(pace, str) and ('W' in pace or 'FTP' in pace):
+                st.markdown(f"⚡ **Potencia:** {pace}")
+            elif isinstance(pace, str) and '/100m' in pace:
+                st.markdown(f"🏊 **Ritmo:** {pace}")
+            else:
+                st.markdown(f"🏃 **Ritmo:** {pace}")
             if segment.get('pace_range'):
                 st.markdown(f"📊 **Rango:** {segment['pace_range']}")
 
         with col3:
-            st.markdown(f"❤️ **FC:** {segment.get('hr_min', '-')} - {segment.get('hr_max', '-')} ppm")
+            hr_min = segment.get('hr_min', '-')
+            hr_max = segment.get('hr_max', '-')
+            if hr_min and hr_max and hr_min != '' and hr_max != '':
+                st.markdown(f"❤️ **FC:** {hr_min} - {hr_max} ppm")
             st.markdown(f"🎯 **Zona:** {segment.get('zone', '-')}")
 
         if segment.get('rest_after'):
@@ -485,6 +557,20 @@ class TrainingCalendarView:
                 st.markdown("#### 🔄 Segmentos")
                 for idx, segment in enumerate(segments, 1):
                     self._render_segment(segment, idx)
+
+    @staticmethod
+    def _parse_pace(pace_str: str) -> float:
+        """Parsea un ritmo como '5:30/km' y retorna el valor decimal en min/km, o 0 si no es válido."""
+        if not pace_str or not isinstance(pace_str, str):
+            return 0
+        try:
+            clean = pace_str.replace('/km', '').strip()
+            parts = clean.split(':')
+            if len(parts) == 2:
+                return int(parts[0]) + int(parts[1]) / 60
+        except (ValueError, IndexError):
+            pass
+        return 0
 
     def get_calendar_data_for_export(self) -> dict:
         """Retorna los datos del calendario formateados para exportación."""

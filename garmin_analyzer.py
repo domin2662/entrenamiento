@@ -617,14 +617,7 @@ class GarminDataAnalyzer:
 
             weekly_trimp = df.groupby(pd.Grouper(key='date', freq='W')).agg(agg_dict).reset_index()
 
-            # Renombrar columnas dinámicamente
-            new_cols = ['week', 'weekly_trimp']
-            if 'distance' in agg_dict:
-                new_cols.append('weekly_distance')
-            if 'duration_minutes' in agg_dict:
-                new_cols.append('weekly_duration')
-
-            # Ajustar número de columnas
+            # Renombrar columnas según el número de columnas resultante
             if len(weekly_trimp.columns) == 4:
                 weekly_trimp.columns = ['week', 'weekly_trimp', 'weekly_distance', 'weekly_duration']
             elif len(weekly_trimp.columns) == 3:
@@ -1063,10 +1056,12 @@ class GarminDataAnalyzer:
                 'acwr': 0, 'acwr_status': 'Sin datos',
                 'ramp_rate': 0, 'ramp_status': 'Sin datos',
                 'monotony': 0, 'strain': 0, 'monotony_status': 'Sin datos',
-                'efficiency_factor': 0, 'ef_trend': 'stable', 'decoupling': 0,
+                'weekly_load': 0,
+                'efficiency_factor': 0, 'ef_trend': 'stable',
+                'ef_change_pct': 0, 'decoupling': 0,
                 'race_predictions': {},
                 'vo2max_estimated': 0, 'vo2max_category': 'Sin datos',
-                'variability_index': 0, 'intensity_factor': 0,
+                'variability_index': 0, 'intensity_factor': 0, 'avg_tss': 0,
                 'metrics_evolution': {'acwr': [], 'ramp_rate': [], 'monotony_strain': [],
                                       'efficiency_factor': [], 'power_metrics': [], 'vo2max': []},
                 'alerts': [], 'daily_recommendation': 'Sube datos de entrenamiento para obtener recomendaciones'
@@ -1431,22 +1426,30 @@ class GarminDataAnalyzer:
         Strain > 4000 = Riesgo alto de enfermedad/lesión
         """
         try:
+            # Trabajar con copia para no mutar el DataFrame original
+            df_work = df.copy()
+
             # Asegurar que tenemos TRIMP calculado
-            if 'trimp' not in df.columns:
-                df['trimp'] = df.apply(lambda row: self._calculate_trimp_row(
+            if 'trimp' not in df_work.columns:
+                df_work['trimp'] = df_work.apply(lambda row: self._calculate_trimp_row(
                     row, max_hr, resting_hr, gender
                 ), axis=1)
 
-            # Obtener últimos 7 días
-            df_sorted = df.sort_values('date')
-            last_7_days = df_sorted.tail(7)
+            # Obtener últimos 7 días calendario (no las últimas 7 filas)
+            df_work['date'] = pd.to_datetime(df_work['date'])
+            df_sorted = df_work.sort_values('date')
+            last_date = df_sorted['date'].max()
+            first_date = last_date - pd.Timedelta(days=6)  # 7 días incluyendo el último
+            last_7_days = df_sorted[df_sorted['date'] >= first_date]
 
-            if len(last_7_days) < 3:
+            if len(last_7_days) == 0:
                 return {'monotony': 0, 'strain': 0, 'status': 'Datos insuficientes', 'weekly_load': 0}
 
-            # Agrupar por día y sumar TRIMP
+            # Agrupar por día y sumar TRIMP, rellenando días sin actividad con 0
             daily_loads = last_7_days.groupby(pd.Grouper(key='date', freq='D'))['trimp'].sum()
-            daily_loads = daily_loads.fillna(0)
+            # Reindexar para incluir los 7 días completos (incluyendo días de descanso)
+            date_range = pd.date_range(start=first_date, end=last_date, freq='D')
+            daily_loads = daily_loads.reindex(date_range).fillna(0)
 
             # Calcular monotony
             mean_load = daily_loads.mean()
@@ -1553,47 +1556,45 @@ class GarminDataAnalyzer:
 
             # Decoupling estimado - Método mejorado
             # El decoupling real se mide dentro de una actividad (primera mitad vs segunda mitad)
-            # Como solo tenemos promedios, estimamos basándonos en carreras largas
+            # Como solo tenemos promedios por actividad, estimamos comparando
+            # la caída de EF en carreras largas vs cortas recientes (mismo corredor).
 
             long_runs = [e for e in ef_values if e['duration'] > 45]
+            short_runs = [e for e in ef_values if 15 < e['duration'] <= 45]
             decoupling = 0
             decoupling_status = "Sin datos suficientes"
 
             if long_runs:
-                # Método 1: Analizar correlación HR/Pace en carreras largas
-                # Ordenar por fecha para ver las más recientes
                 long_runs_sorted = sorted(long_runs, key=lambda x: x['date'], reverse=True)
 
-                # Calcular EF normalizado por distancia para carreras largas
-                # A mayor distancia, esperamos menor EF si hay decoupling
-                ef_by_duration = []
-                for run in long_runs_sorted[:5]:  # Últimas 5 carreras largas
-                    # EF esperado para la duración (modelo lineal)
-                    expected_ef = current_ef * (45 / run['duration'])  # EF teórico si no hubiera fatiga
-                    actual_ef = run['ef']
-                    # Decoupling individual = pérdida de EF vs esperado
-                    individual_dec = ((expected_ef - actual_ef) / expected_ef * 100) if expected_ef > 0 else 0
-                    ef_by_duration.append({
-                        'duration': run['duration'],
-                        'ef': actual_ef,
-                        'decoupling_pct': max(0, individual_dec),
-                        'hr': run['hr']
-                    })
+                # Método principal: comparar EF medio de carreras largas vs cortas
+                # Un corredor con buen sistema aeróbico mantiene EF similar
+                # en carreras largas y cortas.
+                if short_runs:
+                    avg_ef_short = np.mean([r['ef'] for r in short_runs[-5:]])
+                    avg_ef_long = np.mean([r['ef'] for r in long_runs_sorted[:5]])
 
-                if ef_by_duration:
-                    # Promedio de decoupling de las últimas carreras largas
-                    decoupling = np.mean([e['decoupling_pct'] for e in ef_by_duration])
+                    if avg_ef_short > 0:
+                        # Decoupling = caída porcentual de EF en carreras largas vs cortas
+                        decoupling = max(0, ((avg_ef_short - avg_ef_long) / avg_ef_short) * 100)
+                else:
+                    # Sin carreras cortas de referencia: comparar EF de las largas
+                    # con el EF medio global como proxy
+                    avg_ef_long = np.mean([r['ef'] for r in long_runs_sorted[:5]])
+                    if current_ef > 0:
+                        decoupling = max(0, ((current_ef - avg_ef_long) / current_ef) * 100)
 
-                    # Método alternativo: usar regresión lineal HR vs tiempo
-                    # Carreras más largas tienden a tener mayor HR relativo
-                    if len(long_runs) >= 2:
-                        # Calcular incremento de HR por minuto extra
-                        durations = [r['duration'] for r in long_runs_sorted[:5]]
-                        hrs = [r['hr'] for r in long_runs_sorted[:5]]
-                        if len(set(durations)) > 1:  # Evitar división por cero
-                            hr_drift = (max(hrs) - min(hrs)) / (max(durations) - min(durations)) if max(durations) != min(durations) else 0
-                            # Ajustar decoupling basado en drift de HR
-                            decoupling = max(decoupling, hr_drift * 2)  # ~2% por bpm de drift
+                # Método complementario: HR drift en carreras largas recientes
+                # Si la FC media es mayor en carreras más largas a ritmo similar,
+                # indica decoupling cardíaco
+                if len(long_runs_sorted) >= 2:
+                    durations = [r['duration'] for r in long_runs_sorted[:5]]
+                    hrs = [r['hr'] for r in long_runs_sorted[:5]]
+                    if len(set(durations)) > 1 and max(durations) != min(durations):
+                        hr_drift = (max(hrs) - min(hrs)) / (max(durations) - min(durations))
+                        # Ponderar drift de HR como estimación complementaria
+                        hr_decoupling = max(0, hr_drift * 2)  # ~2% por bpm de drift
+                        decoupling = (decoupling + hr_decoupling) / 2  # Media de ambos métodos
 
                 # Limitar a rango realista (0-20%)
                 decoupling = min(20, max(0, decoupling))
