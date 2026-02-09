@@ -261,9 +261,8 @@ class GarminDataAnalyzer:
         client = Garmin(email, password)
         # Login con credenciales (sin tokenstore — aún no existen tokens)
         client.login()
-        # Guardar tokens para futuras sesiones
-        os.makedirs(token_dir, exist_ok=True)
-        client.garth.save(token_dir)
+        # Guardar tokens para futuras sesiones (garth usa dump/load, no save)
+        client.garth.dump(token_dir)
         logger.info("Login exitoso en Garmin Connect. Tokens guardados en %s", token_dir)
         return client
 
@@ -429,10 +428,16 @@ class GarminDataAnalyzer:
 
     @staticmethod
     def has_saved_tokens(token_dir: str = None) -> bool:
-        """Comprueba si hay tokens de Garmin guardados."""
+        """Comprueba si hay tokens de Garmin guardados (oauth1 + oauth2)."""
         if token_dir is None:
             token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
-        return os.path.exists(token_dir) and os.path.isdir(token_dir)
+        if not os.path.isdir(token_dir):
+            return False
+        # garth.load() necesita ambos archivos
+        return (
+            os.path.isfile(os.path.join(token_dir, "oauth1_token.json"))
+            and os.path.isfile(os.path.join(token_dir, "oauth2_token.json"))
+        )
 
     def _parse_calories(self, val) -> float:
         """Parse calories value handling Spanish format."""
