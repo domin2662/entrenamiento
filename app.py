@@ -2100,6 +2100,7 @@ def main():
                     "Gran Fondo": "gran_fondo", "Critérium": "criterium",
                     "Contrarreloj": "contrarreloj", "Carrera por Etapas": "etapas"
                 }
+                distance_goal = cycling_event
                 target_distance = 0  # Cycling uses hours, not distance
             else:  # Triathlon
                 triathlon_event = st.selectbox(
@@ -2111,6 +2112,7 @@ def main():
                     "Sprint": "sprint", "Olímpico": "olimpico",
                     "Medio Ironman (70.3)": "medio_ironman", "Ironman": "ironman"
                 }
+                distance_goal = triathlon_event
                 target_distance = 0
 
         weeks_to_race = (target_date - datetime.now().date()).days // 7
