@@ -8,6 +8,10 @@ import numpy as np
 from datetime import datetime, timedelta
 from io import StringIO
 from typing import Union
+import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class GarminDataAnalyzer:
@@ -228,6 +232,207 @@ class GarminDataAnalyzer:
             raise
         except Exception as e:
             raise ValueError(f"Error inesperado al procesar el archivo CSV: {str(e)}")
+
+    @staticmethod
+    def garmin_login(email: str, password: str, token_dir: str = None) -> object:
+        """
+        Autentica con Garmin Connect y devuelve el cliente.
+        Guarda los tokens para reutilizarlos en futuras sesiones.
+
+        Args:
+            email: Email de la cuenta Garmin Connect
+            password: Contraseña de la cuenta Garmin Connect
+            token_dir: Directorio donde guardar/cargar tokens (default: ~/.garminconnect)
+
+        Returns:
+            Cliente Garmin autenticado
+        """
+        try:
+            from garminconnect import Garmin
+        except ImportError:
+            raise ImportError(
+                "La librería 'garminconnect' no está instalada. "
+                "Instálala con: pip install garminconnect"
+            )
+
+        if token_dir is None:
+            token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
+
+        client = Garmin(email, password)
+        # Login con credenciales (sin tokenstore — aún no existen tokens)
+        client.login()
+        # Guardar tokens para futuras sesiones
+        os.makedirs(token_dir, exist_ok=True)
+        client.garth.save(token_dir)
+        logger.info("Login exitoso en Garmin Connect. Tokens guardados en %s", token_dir)
+        return client
+
+    @staticmethod
+    def garmin_resume(token_dir: str = None) -> object:
+        """
+        Reanuda una sesión de Garmin Connect usando tokens guardados.
+
+        Args:
+            token_dir: Directorio donde están los tokens (default: ~/.garminconnect)
+
+        Returns:
+            Cliente Garmin autenticado
+
+        Raises:
+            ValueError: Si no hay tokens guardados o la sesión expiró
+        """
+        try:
+            from garminconnect import Garmin
+        except ImportError:
+            raise ImportError(
+                "La librería 'garminconnect' no está instalada. "
+                "Instálala con: pip install garminconnect"
+            )
+
+        if token_dir is None:
+            token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
+
+        if not os.path.exists(token_dir):
+            raise ValueError(
+                f"No se encontraron tokens en {token_dir}. "
+                "Inicia sesión primero con email y contraseña."
+            )
+
+        try:
+            client = Garmin()
+            client.login(token_dir)
+            logger.info("Sesión reanudada desde tokens en %s", token_dir)
+            return client
+        except Exception as e:
+            raise ValueError(
+                f"No se pudo reanudar la sesión: {str(e)}. "
+                "Los tokens pueden haber expirado. Inicia sesión de nuevo."
+            )
+
+    def load_from_garmin_api(
+        self,
+        client: object,
+        max_activities: int = 300,
+        filter_running_only: bool = False
+    ) -> pd.DataFrame:
+        """
+        Descarga actividades desde Garmin Connect API y devuelve un DataFrame
+        compatible con el resto del sistema.
+
+        Args:
+            client: Cliente Garmin autenticado (de garmin_login o garmin_resume)
+            max_activities: Número máximo de actividades a descargar (default: 300)
+            filter_running_only: Si True, solo mantiene actividades de carrera
+
+        Returns:
+            DataFrame con columnas estandarizadas
+        """
+        try:
+            # Descargar actividades en lotes de 100 (límite de la API)
+            all_activities = []
+            batch_size = 100
+            start = 0
+
+            while start < max_activities:
+                limit = min(batch_size, max_activities - start)
+                batch = client.get_activities(start, limit)
+                if not batch:
+                    break
+                all_activities.extend(batch)
+                start += len(batch)
+                if len(batch) < limit:
+                    break  # No hay más actividades
+
+            if not all_activities:
+                raise ValueError("No se encontraron actividades en tu cuenta de Garmin Connect")
+
+            logger.info("Descargadas %d actividades de Garmin Connect", len(all_activities))
+
+            # Convertir a DataFrame
+            data = []
+            for act in all_activities:
+                # Extraer duración en formato HH:MM:SS
+                duration_secs = act.get('duration', 0) or 0
+                hours = int(duration_secs // 3600)
+                minutes = int((duration_secs % 3600) // 60)
+                seconds = int(duration_secs % 60)
+                duration_str = f"{hours}:{minutes:02d}:{seconds:02d}"
+
+                # Extraer distancia (la API devuelve en metros)
+                distance_m = act.get('distance', 0) or 0
+                distance_km = round(distance_m / 1000, 2)
+
+                # Tipo de actividad
+                activity_type_info = act.get('activityType', {})
+                if isinstance(activity_type_info, dict):
+                    activity_type = activity_type_info.get('typeKey', 'unknown')
+                else:
+                    activity_type = str(activity_type_info) if activity_type_info else 'unknown'
+
+                row = {
+                    'date': act.get('startTimeLocal', ''),
+                    'distance': distance_km,
+                    'duration': duration_str,
+                    'average_heart_rate': act.get('averageHR') or 0,
+                    'max_heart_rate': act.get('maxHR') or 0,
+                    'calories': act.get('calories') or 0,
+                    'activity_type': activity_type,
+                    'avg_power': act.get('avgPower') or np.nan,
+                    'max_power': act.get('maxPower') or np.nan,
+                    'normalized_power': act.get('normPower') or np.nan,
+                    'elevation_gain': act.get('elevationGain') or 0,
+                    'avg_cadence': act.get('averageRunningCadenceInStepsPerMinute')
+                                   or act.get('avgBikeCadence') or 0,
+                }
+                data.append(row)
+
+            df = pd.DataFrame(data)
+
+            # Parsear fechas
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+
+            # Parsear duración a minutos
+            df['duration_minutes'] = df['duration'].apply(self._parse_duration)
+
+            # Convertir HR a numérico
+            df['average_heart_rate'] = pd.to_numeric(
+                df['average_heart_rate'], errors='coerce'
+            )
+            df['max_heart_rate'] = pd.to_numeric(
+                df['max_heart_rate'], errors='coerce'
+            )
+
+            # Filtrar solo carrera si se solicita
+            if filter_running_only:
+                running_keywords = ['running', 'run', 'trail_running', 'treadmill_running']
+                mask = df['activity_type'].astype(str).str.lower().str.contains(
+                    '|'.join(running_keywords), na=False
+                )
+                df = df[mask].copy()
+
+            # Eliminar filas sin fecha válida
+            df = df.dropna(subset=['date'])
+
+            if df.empty:
+                raise ValueError("No se encontraron actividades válidas con fechas correctas")
+
+            # Ordenar por fecha
+            df = df.sort_values('date').reset_index(drop=True)
+
+            logger.info("DataFrame creado con %d actividades válidas", len(df))
+            return df
+
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"Error al descargar actividades de Garmin Connect: {str(e)}")
+
+    @staticmethod
+    def has_saved_tokens(token_dir: str = None) -> bool:
+        """Comprueba si hay tokens de Garmin guardados."""
+        if token_dir is None:
+            token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
+        return os.path.exists(token_dir) and os.path.isdir(token_dir)
 
     def _parse_calories(self, val) -> float:
         """Parse calories value handling Spanish format."""

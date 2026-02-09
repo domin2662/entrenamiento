@@ -214,62 +214,218 @@ def main():
         st.session_state.training_plan = None
     if 'advanced_metrics' not in st.session_state:
         st.session_state.advanced_metrics = None
+    if 'garmin_connected' not in st.session_state:
+        st.session_state.garmin_connected = False
+    if 'garmin_client' not in st.session_state:
+        st.session_state.garmin_client = None
+
+    # Helper function to process loaded data (used by both CSV and API)
+    def _process_garmin_data(df, analyzer):
+        """Procesa el DataFrame de Garmin y actualiza session_state."""
+        st.session_state.garmin_data = df
+        st.success(f"✅ ¡Se cargaron correctamente {len(df)} actividades!")
+
+        # Show preview
+        st.subheader("Vista Previa de Datos")
+        st.dataframe(df.head(10), use_container_width=True)
+
+        # Analyze fitness
+        st.session_state.fitness_status = analyzer.analyze_fitness(
+            df, max_hr=max_hr, resting_hr=resting_hr, gender=gender
+        )
+
+        # Calculate fitness score with TRIMP
+        st.session_state.fitness_score = analyzer.calculate_fitness_score(
+            df, max_hr=max_hr, resting_hr=resting_hr, age=age, gender=gender
+        )
+
+        # Calculate advanced metrics
+        st.session_state.advanced_metrics = analyzer.calculate_advanced_metrics(
+            df, max_hr=max_hr, resting_hr=resting_hr, age=age, gender=gender
+        )
 
     # Tab 1: Upload Garmin Data
     with tab1:
-        st.header("📁 Subir Historial de Entrenamiento Garmin")
-        st.markdown("""
-        Sube tu archivo CSV de historial de entrenamiento de Garmin para analizar tu nivel de forma actual.
+        st.header("📁 Cargar Datos de Entrenamiento Garmin")
 
-        **Columnas esperadas:**
-        - `date` / `fecha`: Fecha de la actividad
-        - `distance` / `distancia`: Distancia en kilómetros
-        - `duration` / `duracion`: Duración (HH:MM:SS o minutos)
-        - `average_heart_rate` / `fc_media`: Frecuencia cardíaca media (ppm)
-        - `calories` / `calorias`: Calorías quemadas
-        - `activity_type` / `tipo`: Tipo de actividad (Carrera, Caminata, etc.)
-        """)
-
-        uploaded_file = st.file_uploader(
-            "Elige tu archivo CSV de Garmin",
-            type=['csv'],
-            help="Exporta tus actividades desde Garmin Connect"
+        data_source = st.radio(
+            "Selecciona el método de carga de datos:",
+            options=["📄 Subir archivo CSV", "🔗 Conectar con Garmin Connect"],
+            horizontal=True,
+            help="Puedes subir un CSV exportado manualmente o conectar directamente con tu cuenta de Garmin"
         )
 
-        if uploaded_file is not None:
-            try:
-                analyzer = GarminDataAnalyzer()
-                df = analyzer.load_csv(uploaded_file)
-                st.session_state.garmin_data = df
+        if data_source == "📄 Subir archivo CSV":
+            # ─── Opción 1: CSV Upload ───
+            st.markdown("""
+            Sube tu archivo CSV de historial de entrenamiento de Garmin para analizar tu nivel de forma actual.
 
-                st.success(f"✅ ¡Se cargaron correctamente {len(df)} actividades!")
+            **Columnas esperadas:**
+            - `date` / `fecha`: Fecha de la actividad
+            - `distance` / `distancia`: Distancia en kilómetros
+            - `duration` / `duracion`: Duración (HH:MM:SS o minutos)
+            - `average_heart_rate` / `fc_media`: Frecuencia cardíaca media (ppm)
+            - `calories` / `calorias`: Calorías quemadas
+            - `activity_type` / `tipo`: Tipo de actividad (Carrera, Caminata, etc.)
+            """)
 
-                # Show preview
-                st.subheader("Vista Previa de Datos")
-                st.dataframe(df.head(10), use_container_width=True)
+            uploaded_file = st.file_uploader(
+                "Elige tu archivo CSV de Garmin",
+                type=['csv'],
+                help="Exporta tus actividades desde Garmin Connect"
+            )
 
-                # Analyze fitness
-                st.session_state.fitness_status = analyzer.analyze_fitness(
-                    df, max_hr=max_hr, resting_hr=resting_hr, gender=gender
-                )
+            if uploaded_file is not None:
+                try:
+                    analyzer = GarminDataAnalyzer()
+                    df = analyzer.load_csv(uploaded_file)
+                    _process_garmin_data(df, analyzer)
+                except ValueError as e:
+                    st.error(f"❌ Error al cargar el archivo: {str(e)}")
+                except Exception as e:
+                    st.error(f"❌ Error inesperado al procesar el archivo: {str(e)}")
+                    st.info("💡 Asegúrate de que el archivo sea un CSV exportado de Garmin Connect")
+            else:
+                st.info("👆 Sube un archivo CSV exportado de Garmin Connect para comenzar el análisis")
 
-                # Calculate fitness score with TRIMP
-                st.session_state.fitness_score = analyzer.calculate_fitness_score(
-                    df, max_hr=max_hr, resting_hr=resting_hr, age=age, gender=gender
-                )
-
-                # Calculate advanced metrics
-                st.session_state.advanced_metrics = analyzer.calculate_advanced_metrics(
-                    df, max_hr=max_hr, resting_hr=resting_hr, age=age, gender=gender
-                )
-
-            except ValueError as e:
-                st.error(f"❌ Error al cargar el archivo: {str(e)}")
-            except Exception as e:
-                st.error(f"❌ Error inesperado al procesar el archivo: {str(e)}")
-                st.info("💡 Asegúrate de que el archivo sea un CSV exportado de Garmin Connect")
         else:
-            st.info("👆 Sube un archivo CSV exportado de Garmin Connect para comenzar el análisis")
+            # ─── Opción 2: Garmin Connect API ───
+            st.markdown("""
+            Conecta directamente con tu cuenta de **Garmin Connect** para descargar
+            automáticamente tus últimas actividades. Se usa la misma autenticación
+            que la app oficial de Garmin.
+
+            - 🔒 Tus credenciales **no se almacenan** — solo se guardan tokens de sesión
+            - 🔑 Los tokens son válidos durante **~1 año**
+            - 📊 Se descargan hasta **300 actividades** recientes
+            """)
+
+            # Check if garminconnect is installed
+            try:
+                import garminconnect as _gc_check  # noqa: F401
+                garmin_available = True
+            except ImportError:
+                garmin_available = False
+
+            if not garmin_available:
+                st.error(
+                    "⚠️ La librería `garminconnect` no está instalada. "
+                    "Ejecuta en tu terminal:\n\n"
+                    "```\npip install garminconnect\n```"
+                )
+            else:
+                analyzer = GarminDataAnalyzer()
+                has_tokens = analyzer.has_saved_tokens()
+
+                # Show connection status
+                if st.session_state.garmin_connected:
+                    st.success("🟢 Conectado a Garmin Connect")
+                elif has_tokens:
+                    st.info("🔑 Se encontraron tokens guardados. Puedes reanudar la sesión sin credenciales.")
+                else:
+                    st.warning("🔴 No conectado. Introduce tus credenciales de Garmin Connect.")
+
+                # Login section
+                if not st.session_state.garmin_connected:
+                    if has_tokens:
+                        # Try to resume with saved tokens
+                        st.subheader("🔄 Reanudar sesión")
+                        if st.button("Conectar con tokens guardados", use_container_width=True, type="primary"):
+                            with st.spinner("Reanudando sesión con Garmin Connect..."):
+                                try:
+                                    client = GarminDataAnalyzer.garmin_resume()
+                                    st.session_state.garmin_client = client
+                                    st.session_state.garmin_connected = True
+                                    st.rerun()
+                                except ValueError as e:
+                                    st.error(f"❌ {str(e)}")
+                                    st.info("💡 Inicia sesión con email y contraseña.")
+                                except Exception as e:
+                                    st.error(f"❌ Error inesperado: {str(e)}")
+
+                    st.subheader("🔐 Iniciar sesión con credenciales")
+                    with st.form("garmin_login_form"):
+                        garmin_email = st.text_input(
+                            "Email de Garmin Connect",
+                            placeholder="tu_email@ejemplo.com"
+                        )
+                        garmin_password = st.text_input(
+                            "Contraseña",
+                            type="password",
+                            placeholder="Tu contraseña de Garmin Connect"
+                        )
+                        login_submitted = st.form_submit_button(
+                            "🔑 Iniciar Sesión",
+                            use_container_width=True,
+                            type="primary"
+                        )
+
+                        if login_submitted:
+                            if not garmin_email or not garmin_password:
+                                st.error("❌ Introduce email y contraseña")
+                            else:
+                                with st.spinner("Conectando con Garmin Connect... (puede tardar unos segundos)"):
+                                    try:
+                                        client = GarminDataAnalyzer.garmin_login(
+                                            garmin_email, garmin_password
+                                        )
+                                        st.session_state.garmin_client = client
+                                        st.session_state.garmin_connected = True
+                                        st.success("✅ ¡Conexión exitosa!")
+                                        st.rerun()
+                                    except ImportError as e:
+                                        st.error(f"❌ {str(e)}")
+                                    except Exception as e:
+                                        error_msg = str(e)
+                                        if "401" in error_msg or "Unauthorized" in error_msg:
+                                            st.error("❌ Credenciales incorrectas. Verifica tu email y contraseña.")
+                                        elif "429" in error_msg or "Too Many" in error_msg:
+                                            st.error("❌ Demasiados intentos. Espera unos minutos e inténtalo de nuevo.")
+                                        elif "MFA" in error_msg or "two-factor" in error_msg.lower():
+                                            st.error("❌ Tu cuenta tiene MFA activado. Desactívalo temporalmente o usa el método CSV.")
+                                        else:
+                                            st.error(f"❌ Error de conexión: {error_msg}")
+
+                # Download activities section
+                if st.session_state.garmin_connected and st.session_state.garmin_client is not None:
+                    st.divider()
+                    st.subheader("📥 Descargar Actividades")
+
+                    col_dl1, col_dl2 = st.columns(2)
+                    with col_dl1:
+                        max_activities = st.number_input(
+                            "Número máximo de actividades",
+                            min_value=10, max_value=300, value=300, step=10,
+                            help="Máximo 300 actividades. Cuantas más actividades, mejor será el análisis."
+                        )
+                    with col_dl2:
+                        filter_running = st.checkbox(
+                            "Solo actividades de carrera",
+                            value=False,
+                            help="Filtra para mostrar solo Running, Trail Running, etc."
+                        )
+
+                    if st.button("📥 Descargar actividades de Garmin", use_container_width=True, type="primary"):
+                        with st.spinner(f"Descargando hasta {max_activities} actividades de Garmin Connect..."):
+                            try:
+                                df = analyzer.load_from_garmin_api(
+                                    st.session_state.garmin_client,
+                                    max_activities=max_activities,
+                                    filter_running_only=filter_running
+                                )
+                                _process_garmin_data(df, analyzer)
+                            except ValueError as e:
+                                st.error(f"❌ {str(e)}")
+                            except Exception as e:
+                                st.error(f"❌ Error al descargar actividades: {str(e)}")
+
+                    # Disconnect button
+                    st.divider()
+                    if st.button("🔌 Desconectar de Garmin Connect", use_container_width=True):
+                        st.session_state.garmin_connected = False
+                        st.session_state.garmin_client = None
+                        st.info("Desconectado. Los tokens guardados siguen disponibles para futuras sesiones.")
+                        st.rerun()
 
     # Tab 2: Fitness Analysis
     with tab2:
