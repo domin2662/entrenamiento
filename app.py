@@ -64,7 +64,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def main():
-    st.markdown('<h1 class="main-header">🏃 Domin Cideam.es - Generador de Planes de Entrenamiento</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🏃 Domin FiT - Generador de Planes de Entrenamiento</h1>', unsafe_allow_html=True)
 
     # Sidebar for inputs
     with st.sidebar:
