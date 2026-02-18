@@ -27,7 +27,7 @@ from pdf_exporter import TrainingPlanPDFExporter
 
 # Page configuration
 st.set_page_config(
-    page_title="Domin Cideam.es - Plan de Entrenamiento",
+    page_title="Domin FT"
     page_icon="🏃",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -64,7 +64,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def main():
-    st.markdown('<h1 class="main-header">🏃 Domin Cideam.es - Generador de Planes de Entrenamiento</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🏃 Domin FT - Forma y Planes de Entrenamiento</h1>', unsafe_allow_html=True)nes de Entrenamiento</h1>', unsafe_allow_html=True)
 
     # Sidebar for inputs
     with st.sidebar:
