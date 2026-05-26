@@ -78,7 +78,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def main():
+<<<<<<< HEAD
     st.markdown('<h1 class="main-header"> Domin FT - Forma y Planes de Entrenamiento</h1>', unsafe_allow_html=True)
+=======
+    st.markdown('<h1 class="main-header">🏃 Domin FiT - Generador de Planes de Entrenamiento</h1>', unsafe_allow_html=True)
+>>>>>>> 9ea50a28773f16874d956ae7516c24058e84e0b3
 
     # Sidebar for inputs
     with st.sidebar:
