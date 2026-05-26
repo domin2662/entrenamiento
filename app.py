@@ -14,20 +14,34 @@ from io import BytesIO
 import json
 import struct
 import zipfile
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Import local modules
 from training_zones import TrainingZones
 from plan_generator import TrainingPlanGenerator
 from cycling_plan_generator import CyclingPlanGenerator
 from triathlon_plan_generator import TriathlonPlanGenerator
-from garmin_analyzer import GarminDataAnalyzer, PowerProfileAnalyzer
+from garmin_analyzer import GarminDataAnalyzer, GarminMFARequiredError, PowerProfileAnalyzer
 from garmin_fit_exporter import GarminFitExporter
 from calendar_view import TrainingCalendarView
 from pdf_exporter import TrainingPlanPDFExporter
 
+# Almacenamiento de tokens en el navegador (localStorage) — persiste entre recargas
+# y entre máquinas que abren la misma URL con el mismo perfil de navegador.
+try:
+    from streamlit_local_storage import LocalStorage
+    _LOCAL_STORAGE_AVAILABLE = True
+except ImportError:
+    LocalStorage = None
+    _LOCAL_STORAGE_AVAILABLE = False
+
+GARMIN_TOKENS_LS_KEY = "garmin_tokens_v1"
+
 # Page configuration
 st.set_page_config(
-    page_title="Domin FT"
+    page_title="Domin FT",
     page_icon="🏃",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -64,7 +78,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def main():
-    st.markdown('<h1 class="main-header"> Domin FT - Forma y Planes de Entrenamiento</h1>', unsafe_allow_html=True)nes de Entrenamiento</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header"> Domin FT - Forma y Planes de Entrenamiento</h1>', unsafe_allow_html=True)
 
     # Sidebar for inputs
     with st.sidebar:
@@ -218,6 +232,68 @@ def main():
         st.session_state.garmin_connected = False
     if 'garmin_client' not in st.session_state:
         st.session_state.garmin_client = None
+    if 'garmin_auto_resume_tried' not in st.session_state:
+        st.session_state.garmin_auto_resume_tried = False
+    # Estado del flujo MFA en 2 pasos
+    if 'garmin_mfa_pending' not in st.session_state:
+        st.session_state.garmin_mfa_pending = False
+    if 'garmin_mfa_client' not in st.session_state:
+        st.session_state.garmin_mfa_client = None
+    if 'garmin_mfa_state' not in st.session_state:
+        st.session_state.garmin_mfa_state = None
+
+    # Instancia única de LocalStorage para esta sesión de Streamlit
+    if _LOCAL_STORAGE_AVAILABLE and 'garmin_local_storage' not in st.session_state:
+        st.session_state.garmin_local_storage = LocalStorage()
+    _ls = st.session_state.get('garmin_local_storage')
+
+    def _persist_tokens_to_browser():
+        """Empaqueta los tokens del disco y los guarda en localStorage del navegador."""
+        if _ls is None:
+            return
+        try:
+            tokens = GarminDataAnalyzer.tokens_to_dict()
+            if tokens:
+                _ls.setItem(GARMIN_TOKENS_LS_KEY, json.dumps(tokens))
+                logger.info("Tokens Garmin persistidos en localStorage del navegador")
+        except Exception as e:
+            logger.warning("No se pudieron persistir tokens en el navegador: %s", str(e))
+
+    def _clear_tokens_from_browser():
+        """Borra los tokens del localStorage del navegador."""
+        if _ls is None:
+            return
+        try:
+            _ls.deleteItem(GARMIN_TOKENS_LS_KEY)
+        except Exception as e:
+            logger.warning("No se pudieron borrar tokens del navegador: %s", str(e))
+
+    # Auto-resume: intentar reconectar con tokens guardados al iniciar la app.
+    # Prioridad: 1) tokens en disco  2) tokens en localStorage del navegador.
+    if (not st.session_state.garmin_connected
+            and not st.session_state.garmin_auto_resume_tried):
+        st.session_state.garmin_auto_resume_tried = True
+
+        # Si no hay tokens en disco pero sí en el navegador, restaurarlos antes de reanudar
+        if not GarminDataAnalyzer.has_saved_tokens() and _ls is not None:
+            try:
+                raw = _ls.getItem(GARMIN_TOKENS_LS_KEY)
+                if raw:
+                    tokens = json.loads(raw) if isinstance(raw, str) else raw
+                    if GarminDataAnalyzer.tokens_from_dict(tokens):
+                        logger.info("Tokens Garmin restaurados desde localStorage del navegador")
+            except Exception as e:
+                logger.info("No se pudieron leer tokens desde el navegador: %s", str(e))
+
+        if GarminDataAnalyzer.has_saved_tokens():
+            try:
+                client = GarminDataAnalyzer.garmin_resume()
+                st.session_state.garmin_client = client
+                st.session_state.garmin_connected = True
+                logger.info("Auto-resume exitoso con tokens guardados")
+                _persist_tokens_to_browser()
+            except Exception:
+                logger.info("Auto-resume fallido, se necesitan credenciales")
 
     # Helper function to process loaded data (used by both CSV and API)
     def _process_garmin_data(df, analyzer):
@@ -238,6 +314,15 @@ def main():
         st.session_state.fitness_score = analyzer.calculate_fitness_score(
             df, max_hr=max_hr, resting_hr=resting_hr, age=age, gender=gender
         )
+
+        # Coherencia entre pestañas: derivar 'Nivel de Forma' desde el Fitness Score
+        # (antes se basaba solo en horas/semana planas y discrepaba con el score TRIMP)
+        try:
+            score_val = st.session_state.fitness_score.get('fitness_score', 0)
+            st.session_state.fitness_status['fitness_level'] = \
+                GarminDataAnalyzer.derive_fitness_level_from_score(score_val)
+        except Exception:
+            pass
 
         # Calculate advanced metrics
         st.session_state.advanced_metrics = analyzer.calculate_advanced_metrics(
@@ -318,73 +403,149 @@ def main():
                 has_tokens = analyzer.has_saved_tokens()
 
                 # Show connection status
+                token_info = GarminDataAnalyzer.get_token_info()
                 if st.session_state.garmin_connected:
                     st.success("🟢 Conectado a Garmin Connect")
+                    if token_info['last_modified']:
+                        st.caption(
+                            f"Tokens guardados en `{token_info['token_dir']}` "
+                            f"(actualizado: {token_info['last_modified'].strftime('%d/%m/%Y %H:%M')})"
+                        )
                 elif has_tokens:
-                    st.info("🔑 Se encontraron tokens guardados. Puedes reanudar la sesión sin credenciales.")
+                    msg = "🔑 Se encontraron tokens guardados. Puedes reanudar la sesión sin credenciales."
+                    if token_info['last_modified']:
+                        msg += f"\n\nUltima actualización: **{token_info['last_modified'].strftime('%d/%m/%Y %H:%M')}**"
+                    st.info(msg)
                 else:
                     st.warning("🔴 No conectado. Introduce tus credenciales de Garmin Connect.")
 
                 # Login section
                 if not st.session_state.garmin_connected:
-                    if has_tokens:
-                        # Try to resume with saved tokens
-                        st.subheader("🔄 Reanudar sesión")
-                        if st.button("Conectar con tokens guardados", use_container_width=True, type="primary"):
-                            with st.spinner("Reanudando sesión con Garmin Connect..."):
-                                try:
-                                    client = GarminDataAnalyzer.garmin_resume()
-                                    st.session_state.garmin_client = client
-                                    st.session_state.garmin_connected = True
-                                    st.rerun()
-                                except ValueError as e:
-                                    st.error(f"❌ {str(e)}")
-                                    st.info("💡 Inicia sesión con email y contraseña.")
-                                except Exception as e:
-                                    st.error(f"❌ Error inesperado: {str(e)}")
+                    # --- Flujo MFA: segundo paso del login con código de verificación ---
+                    if st.session_state.garmin_mfa_pending:
+                        st.subheader("🔐 Verificación en dos pasos")
+                        st.info(
+                            "Garmin ha enviado un código de verificación a tu email "
+                            "(o app Garmin Connect). Introdúcelo para completar el login."
+                        )
+                        with st.form("garmin_mfa_form"):
+                            mfa_code = st.text_input(
+                                "Código MFA (6 dígitos)",
+                                max_chars=10,
+                                placeholder="123456"
+                            )
+                            col_mfa1, col_mfa2 = st.columns(2)
+                            with col_mfa1:
+                                mfa_submitted = st.form_submit_button(
+                                    "✅ Verificar código",
+                                    use_container_width=True,
+                                    type="primary"
+                                )
+                            with col_mfa2:
+                                mfa_cancel = st.form_submit_button(
+                                    "❌ Cancelar",
+                                    use_container_width=True
+                                )
 
-                    st.subheader("🔐 Iniciar sesión con credenciales")
-                    with st.form("garmin_login_form"):
-                        garmin_email = st.text_input(
-                            "Email de Garmin Connect",
-                            placeholder="tu_email@ejemplo.com"
-                        )
-                        garmin_password = st.text_input(
-                            "Contraseña",
-                            type="password",
-                            placeholder="Tu contraseña de Garmin Connect"
-                        )
-                        login_submitted = st.form_submit_button(
-                            "🔑 Iniciar Sesión",
-                            use_container_width=True,
-                            type="primary"
-                        )
+                            if mfa_cancel:
+                                st.session_state.garmin_mfa_pending = False
+                                st.session_state.garmin_mfa_client = None
+                                st.session_state.garmin_mfa_state = None
+                                st.rerun()
 
-                        if login_submitted:
-                            if not garmin_email or not garmin_password:
-                                st.error("❌ Introduce email y contraseña")
-                            else:
-                                with st.spinner("Conectando con Garmin Connect... (puede tardar unos segundos)"):
+                            if mfa_submitted:
+                                if not mfa_code or not mfa_code.strip():
+                                    st.error("❌ Introduce el código recibido")
+                                else:
+                                    with st.spinner("Verificando código MFA..."):
+                                        try:
+                                            client = GarminDataAnalyzer.garmin_complete_mfa(
+                                                st.session_state.garmin_mfa_client,
+                                                st.session_state.garmin_mfa_state,
+                                                mfa_code,
+                                            )
+                                            st.session_state.garmin_client = client
+                                            st.session_state.garmin_connected = True
+                                            st.session_state.garmin_mfa_pending = False
+                                            st.session_state.garmin_mfa_client = None
+                                            st.session_state.garmin_mfa_state = None
+                                            _persist_tokens_to_browser()
+                                            st.success("✅ ¡Verificación correcta! Conectado.")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"❌ Código incorrecto o expirado: {str(e)}")
+
+                    else:
+                        if has_tokens:
+                            # Try to resume with saved tokens
+                            st.subheader("🔄 Reanudar sesión")
+                            if st.button("Conectar con tokens guardados", use_container_width=True, type="primary"):
+                                with st.spinner("Reanudando sesión con Garmin Connect..."):
                                     try:
-                                        client = GarminDataAnalyzer.garmin_login(
-                                            garmin_email, garmin_password
-                                        )
+                                        client = GarminDataAnalyzer.garmin_resume()
                                         st.session_state.garmin_client = client
                                         st.session_state.garmin_connected = True
-                                        st.success("✅ ¡Conexión exitosa!")
+                                        _persist_tokens_to_browser()
                                         st.rerun()
-                                    except ImportError as e:
+                                    except ValueError as e:
                                         st.error(f"❌ {str(e)}")
+                                        st.info("💡 Inicia sesión con email y contraseña.")
                                     except Exception as e:
-                                        error_msg = str(e)
-                                        if "401" in error_msg or "Unauthorized" in error_msg:
-                                            st.error("❌ Credenciales incorrectas. Verifica tu email y contraseña.")
-                                        elif "429" in error_msg or "Too Many" in error_msg:
-                                            st.error("❌ Demasiados intentos. Espera unos minutos e inténtalo de nuevo.")
-                                        elif "MFA" in error_msg or "two-factor" in error_msg.lower():
-                                            st.error("❌ Tu cuenta tiene MFA activado. Desactívalo temporalmente o usa el método CSV.")
-                                        else:
-                                            st.error(f"❌ Error de conexión: {error_msg}")
+                                        st.error(f"❌ Error inesperado: {str(e)}")
+
+                        st.subheader("🔐 Iniciar sesión con credenciales")
+                        with st.form("garmin_login_form"):
+                            garmin_email = st.text_input(
+                                "Email de Garmin Connect",
+                                placeholder="tu_email@ejemplo.com"
+                            )
+                            garmin_password = st.text_input(
+                                "Contraseña",
+                                type="password",
+                                placeholder="Tu contraseña de Garmin Connect"
+                            )
+                            login_submitted = st.form_submit_button(
+                                "🔑 Iniciar Sesión",
+                                use_container_width=True,
+                                type="primary"
+                            )
+
+                            if login_submitted:
+                                if not garmin_email or not garmin_password:
+                                    st.error("❌ Introduce email y contraseña")
+                                else:
+                                    with st.spinner("Conectando con Garmin Connect... (puede tardar unos segundos)"):
+                                        try:
+                                            client = GarminDataAnalyzer.garmin_login(
+                                                garmin_email, garmin_password
+                                            )
+                                            st.session_state.garmin_client = client
+                                            st.session_state.garmin_connected = True
+                                            _persist_tokens_to_browser()
+                                            st.success("✅ ¡Conexión exitosa!")
+                                            st.rerun()
+                                        except GarminMFARequiredError as mfa_err:
+                                            # Guardar el cliente y el estado para el segundo paso
+                                            st.session_state.garmin_mfa_pending = True
+                                            st.session_state.garmin_mfa_client = mfa_err.client
+                                            st.session_state.garmin_mfa_state = mfa_err.state
+                                            st.rerun()
+                                        except ImportError as e:
+                                            st.error(f"❌ {str(e)}")
+                                        except Exception as e:
+                                            error_msg = str(e)
+                                            if "401" in error_msg or "Unauthorized" in error_msg:
+                                                st.error("❌ Credenciales incorrectas. Verifica tu email y contraseña.")
+                                            elif "429" in error_msg or "Too Many" in error_msg:
+                                                st.error("❌ Demasiados intentos. Espera unos minutos e inténtalo de nuevo.")
+                                                if has_tokens:
+                                                    st.info(
+                                                        "💡 Tienes tokens guardados. Usa el botón "
+                                                        "**'Conectar con tokens guardados'** de arriba "
+                                                        "para evitar el rate limit de Garmin."
+                                                    )
+                                            else:
+                                                st.error(f"❌ Error de conexión: {error_msg}")
 
                 # Download activities section
                 if st.session_state.garmin_connected and st.session_state.garmin_client is not None:
@@ -414,18 +575,33 @@ def main():
                                     filter_running_only=filter_running
                                 )
                                 _process_garmin_data(df, analyzer)
+                                # Refrescar tokens tras operación exitosa
+                                GarminDataAnalyzer.refresh_tokens(
+                                    st.session_state.garmin_client
+                                )
                             except ValueError as e:
                                 st.error(f"❌ {str(e)}")
                             except Exception as e:
                                 st.error(f"❌ Error al descargar actividades: {str(e)}")
 
-                    # Disconnect button
+                    # Disconnect buttons
                     st.divider()
-                    if st.button("🔌 Desconectar de Garmin Connect", use_container_width=True):
-                        st.session_state.garmin_connected = False
-                        st.session_state.garmin_client = None
-                        st.info("Desconectado. Los tokens guardados siguen disponibles para futuras sesiones.")
-                        st.rerun()
+                    col_dc1, col_dc2 = st.columns(2)
+                    with col_dc1:
+                        if st.button("🔌 Desconectar (mantener tokens)", use_container_width=True):
+                            st.session_state.garmin_connected = False
+                            st.session_state.garmin_client = None
+                            st.info("Desconectado. Los tokens guardados siguen disponibles para futuras sesiones.")
+                            st.rerun()
+                    with col_dc2:
+                        if st.button("🗑️ Cerrar sesión y borrar tokens", use_container_width=True):
+                            st.session_state.garmin_connected = False
+                            st.session_state.garmin_client = None
+                            st.session_state.garmin_auto_resume_tried = True
+                            GarminDataAnalyzer.clear_saved_tokens()
+                            _clear_tokens_from_browser()
+                            st.success("Sesión cerrada y tokens borrados del disco y del navegador.")
+                            st.rerun()
 
     # Tab 2: Fitness Analysis
     with tab2:
@@ -529,19 +705,26 @@ def main():
             col_score1, col_score2, col_score3 = st.columns([2, 2, 2])
 
             with col_score1:
-                # Gauge de Fitness Score
+                # Gauge de Fitness Score con delta vs hace 42 días (ciclo CTL completo)
+                ref_score = fs.get('fitness_score_42d_ago', fs['fitness_score'])
                 fig_gauge = go.Figure(go.Indicator(
                     mode="gauge+number+delta",
                     value=fs['fitness_score'],
                     title={'text': "Fitness Score", 'font': {'size': 24}},
-                    delta={'reference': 50, 'increasing': {'color': "green"}},
+                    delta={
+                        'reference': ref_score,
+                        'increasing': {'color': "green"},
+                        'decreasing': {'color': "red"},
+                        'suffix': " vs 42d"
+                    },
                     gauge={
                         'axis': {'range': [0, 100], 'tickwidth': 1},
                         'bar': {'color': "#1E88E5"},
                         'steps': [
                             {'range': [0, 25], 'color': "#ffebee"},
-                            {'range': [25, 50], 'color': "#fff3e0"},
-                            {'range': [50, 75], 'color': "#e8f5e9"},
+                            {'range': [25, 45], 'color': "#fff3e0"},
+                            {'range': [45, 60], 'color': "#e8f5e9"},
+                            {'range': [60, 75], 'color': "#c8e6c9"},
                             {'range': [75, 100], 'color': "#e3f2fd"}
                         ],
                         'threshold': {
@@ -553,11 +736,18 @@ def main():
                 ))
                 fig_gauge.update_layout(height=300)
                 st.plotly_chart(fig_gauge, use_container_width=True)
+                st.caption(
+                    "Escala atlética: 0-25 principiante · 25-45 recreacional · "
+                    "45-60 aficionado activo · 60-75 competidor amateur · 75+ semi-pro/élite"
+                )
 
             with col_score2:
                 st.subheader("📊 Tu Posición")
-                st.metric("Percentil Poblacional", f"{fs['percentile']}%")
-                st.info(f"**{fs['percentile_label']}** - Estás por encima del {fs['percentile']}% de la población de tu edad y género.")
+                st.metric("Percentil (población deportiva)", f"{fs['percentile']}%")
+                st.info(
+                    f"**{fs['percentile_label']}** — Estás por encima del {fs['percentile']}% "
+                    "de la **población deportiva** de tu edad y género (no de la población general)."
+                )
 
                 # Gráfico de percentil
                 fig_percentile = go.Figure()
@@ -582,8 +772,16 @@ def main():
                 st.metric("ATL (Fatiga)", f"{fs['atl']:.1f}", help="Acute Training Load - Tu fatiga reciente")
                 st.metric("TSB (Balance)", f"{fs['tsb']:.1f}", help="Training Stress Balance - Diferencia entre forma y fatiga")
 
-                # Estado de forma con color
-                tsb_color = "green" if fs['tsb'] > 0 else "orange" if fs['tsb'] > -15 else "red"
+                # Estado de forma con color (umbrales alineados con la tabla de la sección 'Cómo se calcula')
+                tsb_val = fs['tsb']
+                if tsb_val > 10:
+                    tsb_color = "blue"        # Fresco
+                elif tsb_val > -10:
+                    tsb_color = "green"       # Forma óptima
+                elif tsb_val > -25:
+                    tsb_color = "orange"      # Fatigado
+                else:
+                    tsb_color = "red"         # Muy fatigado
                 st.markdown(f"<div style='padding:10px; background-color:{tsb_color}20; border-radius:5px; border-left:4px solid {tsb_color};'>{fs['form_status']}</div>", unsafe_allow_html=True)
 
             # Gráfico de evolución temporal
@@ -693,10 +891,24 @@ def main():
                 | -25 a -10 | Fatigado | Considerar reducir carga |
                 | < -25 | Muy fatigado | Riesgo de sobreentrenamiento |
 
-                ### Percentiles Poblacionales
+                ### Percentiles (población deportiva)
 
-                La comparación se realiza contra datos poblacionales ajustados por edad y género,
-                basados en estudios epidemiológicos de actividad física.
+                El percentil compara tu Fitness Score contra una distribución calibrada
+                para población **deportiva** (no general): media 50, desviación 15.
+                Así score 50 ≈ percentil 50, score 65 ≈ percentil 84, score 35 ≈ percentil 16.
+
+                ### Estimación sin pulsómetro
+
+                Para actividades sin HR registrada, se estima el %HRR con curvas
+                específicas por deporte (ciclismo, carrera, natación, marcha, fuerza, etc.)
+                en vez de aplicar la curva de carrera a todo, que sobreestimaba mucho
+                la intensidad en bici (25 km/h salía como Z5 cuando es Z2-Z3).
+
+                ### Delta del medidor
+
+                El valor pequeño bajo el score compara tu Fitness Score actual con
+                el de hace 42 días (un ciclo CTL completo): refleja progreso real
+                de forma física, no distancia a una referencia arbitraria.
                 """)
         else:
             st.warning("⚠️ Por favor sube los datos de Garmin en la pestaña 'Subir Datos' primero para ver tu Fitness Score")

@@ -9,9 +9,24 @@ from datetime import datetime, timedelta
 from io import StringIO
 from typing import Union
 import os
+import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class GarminMFARequiredError(Exception):
+    """Se lanza cuando Garmin Connect exige un código MFA para completar el login.
+
+    Atributos:
+        client: instancia de Garmin con el login en curso.
+        state: estado opaco que debe pasarse a resume_login junto al código.
+    """
+
+    def __init__(self, client, state, message: str = "Garmin requiere código MFA"):
+        super().__init__(message)
+        self.client = client
+        self.state = state
 
 
 class GarminDataAnalyzer:
@@ -259,11 +274,42 @@ class GarminDataAnalyzer:
             token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
 
         client = Garmin(email, password)
-        # Login con credenciales (sin tokenstore — aún no existen tokens)
-        client.login()
+        # Login con credenciales (sin tokenstore — aún no existen tokens).
+        # En garminconnect >= 0.2.20, login() devuelve ("needs_mfa", state) cuando
+        # Garmin exige código MFA por email/app. En ese caso aún no existe client.garth.
+        result = client.login()
+        if (
+            isinstance(result, tuple)
+            and len(result) == 2
+            and result[0] == "needs_mfa"
+        ):
+            raise GarminMFARequiredError(client=client, state=result[1])
+
         # Guardar tokens para futuras sesiones (garth usa dump/load, no save)
         client.garth.dump(token_dir)
         logger.info("Login exitoso en Garmin Connect. Tokens guardados en %s", token_dir)
+        return client
+
+    @staticmethod
+    def garmin_complete_mfa(client, state, mfa_code: str, token_dir: str = None) -> object:
+        """
+        Completa el login de Garmin Connect tras recibir un código MFA.
+
+        Args:
+            client: Cliente Garmin devuelto por GarminMFARequiredError.client
+            state: Estado opaco devuelto por GarminMFARequiredError.state
+            mfa_code: Código de verificación recibido por email o app
+            token_dir: Directorio donde guardar tokens (default: ~/.garminconnect)
+
+        Returns:
+            Cliente Garmin autenticado
+        """
+        if token_dir is None:
+            token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
+
+        client.resume_login(state, mfa_code.strip())
+        client.garth.dump(token_dir)
+        logger.info("Login MFA completado. Tokens guardados en %s", token_dir)
         return client
 
     @staticmethod
@@ -438,6 +484,130 @@ class GarminDataAnalyzer:
             os.path.isfile(os.path.join(token_dir, "oauth1_token.json"))
             and os.path.isfile(os.path.join(token_dir, "oauth2_token.json"))
         )
+
+    @staticmethod
+    def get_token_info(token_dir: str = None) -> dict:
+        """
+        Devuelve información sobre los tokens guardados.
+
+        Returns:
+            dict con 'exists', 'token_dir', 'last_modified' (datetime o None)
+        """
+        if token_dir is None:
+            token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
+
+        oauth2_path = os.path.join(token_dir, "oauth2_token.json")
+        if not os.path.isfile(oauth2_path):
+            return {'exists': False, 'token_dir': token_dir, 'last_modified': None}
+
+        try:
+            mtime = os.path.getmtime(oauth2_path)
+            last_modified = datetime.fromtimestamp(mtime)
+        except Exception:
+            last_modified = None
+
+        return {
+            'exists': True,
+            'token_dir': token_dir,
+            'last_modified': last_modified,
+        }
+
+    @staticmethod
+    def refresh_tokens(client: object, token_dir: str = None) -> None:
+        """
+        Guarda/refresca los tokens del cliente autenticado en disco.
+
+        Args:
+            client: Cliente Garmin autenticado
+            token_dir: Directorio donde guardar tokens (default: ~/.garminconnect)
+        """
+        if token_dir is None:
+            token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
+        try:
+            client.garth.dump(token_dir)
+            logger.info("Tokens refrescados en %s", token_dir)
+        except Exception as e:
+            logger.warning("No se pudieron refrescar los tokens: %s", str(e))
+
+    @staticmethod
+    def tokens_to_dict(token_dir: str = None) -> dict:
+        """
+        Lee los tokens OAuth1/OAuth2 del disco y los empaqueta en un dict serializable.
+
+        Pensado para persistir la sesión en el almacenamiento del navegador
+        (localStorage) en lugar de depender solo del filesystem del servidor.
+
+        Returns:
+            dict con claves 'oauth1' y 'oauth2' (strings JSON) o {} si no existen.
+        """
+        if token_dir is None:
+            token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
+
+        oauth1_path = os.path.join(token_dir, "oauth1_token.json")
+        oauth2_path = os.path.join(token_dir, "oauth2_token.json")
+        if not (os.path.isfile(oauth1_path) and os.path.isfile(oauth2_path)):
+            return {}
+
+        try:
+            with open(oauth1_path, "r", encoding="utf-8") as f:
+                oauth1 = f.read()
+            with open(oauth2_path, "r", encoding="utf-8") as f:
+                oauth2 = f.read()
+            return {"oauth1": oauth1, "oauth2": oauth2}
+        except Exception as e:
+            logger.warning("No se pudieron leer los tokens para exportar: %s", str(e))
+            return {}
+
+    @staticmethod
+    def tokens_from_dict(tokens: dict, token_dir: str = None) -> bool:
+        """
+        Restaura los tokens OAuth1/OAuth2 a disco a partir de un dict previamente
+        obtenido con tokens_to_dict (típicamente leído del localStorage del navegador).
+
+        Args:
+            tokens: dict con claves 'oauth1' y 'oauth2' (contenido JSON como string).
+            token_dir: Directorio destino (default: ~/.garminconnect).
+
+        Returns:
+            True si se escribieron ambos archivos, False en caso contrario.
+        """
+        if not isinstance(tokens, dict):
+            return False
+        oauth1 = tokens.get("oauth1")
+        oauth2 = tokens.get("oauth2")
+        if not oauth1 or not oauth2:
+            return False
+
+        if token_dir is None:
+            token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
+
+        try:
+            os.makedirs(token_dir, exist_ok=True)
+            # Validar mínimamente que son JSON antes de escribirlos
+            json.loads(oauth1)
+            json.loads(oauth2)
+            with open(os.path.join(token_dir, "oauth1_token.json"), "w", encoding="utf-8") as f:
+                f.write(oauth1)
+            with open(os.path.join(token_dir, "oauth2_token.json"), "w", encoding="utf-8") as f:
+                f.write(oauth2)
+            logger.info("Tokens restaurados desde almacenamiento del navegador en %s", token_dir)
+            return True
+        except Exception as e:
+            logger.warning("No se pudieron restaurar los tokens desde el navegador: %s", str(e))
+            return False
+
+    @staticmethod
+    def clear_saved_tokens(token_dir: str = None) -> None:
+        """Borra los tokens guardados en disco (oauth1_token.json y oauth2_token.json)."""
+        if token_dir is None:
+            token_dir = os.path.join(os.path.expanduser("~"), ".garminconnect")
+        for name in ("oauth1_token.json", "oauth2_token.json"):
+            path = os.path.join(token_dir, name)
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except Exception as e:
+                logger.warning("No se pudo borrar %s: %s", path, str(e))
 
     def _parse_calories(self, val) -> float:
         """Parse calories value handling Spanish format."""
@@ -700,21 +870,16 @@ class GarminDataAnalyzer:
                 # Fórmula TRIMP de Banister completa
                 intensity_factor = hr_reserve_pct * k_coefficient * np.exp(y_factor * hr_reserve_pct)
             else:
-                # Estimación mejorada sin HR basada en duración y distancia
+                # Sin HR: usar curva de %HRR específica por tipo de deporte
+                # (mismo helper que _calculate_trimp_row para mantener coherencia)
                 distance = row.get('distance', 0)
                 if pd.isna(distance):
                     distance = 0
-
-                # Estimar intensidad basada en velocidad si hay distancia
-                if distance > 0 and duration > 0:
-                    speed_kmh = distance / (duration / 60)  # km/h
-                    # Asumir intensidad moderada (~65% HRR) para velocidades típicas
-                    # Velocidad 8-12 km/h = intensidad moderada
-                    estimated_hr_pct = min(0.85, max(0.5, 0.4 + speed_kmh * 0.035))
-                    intensity_factor = estimated_hr_pct * k_coefficient * np.exp(y_factor * estimated_hr_pct)
-                else:
-                    # Sin datos suficientes, asumir intensidad baja-moderada
-                    intensity_factor = 0.5 * k_coefficient * np.exp(y_factor * 0.5)
+                speed_kmh = (distance / (duration / 60)) if (distance > 0 and duration > 0) else 0.0
+                estimated_hr_pct = self._estimate_hrr_from_activity(
+                    row.get('activity_type'), speed_kmh, has_distance=(distance > 0)
+                )
+                intensity_factor = estimated_hr_pct * k_coefficient * np.exp(y_factor * estimated_hr_pct)
 
             total_load += duration * intensity_factor
 
@@ -880,6 +1045,23 @@ class GarminDataAnalyzer:
                 lambda x: self._normalize_fitness_score(float(x) if pd.notna(x) else 0, age, gender)
             )
 
+            # Score de hace 42 días (1 ciclo CTL) para mostrar delta real de progreso
+            fitness_score_42d_ago = fitness_score  # fallback
+            if len(evolution_data) > 42:
+                try:
+                    fitness_score_42d_ago = float(evolution_data['fitness_score'].iloc[-43])
+                    if pd.isna(fitness_score_42d_ago):
+                        fitness_score_42d_ago = fitness_score
+                except Exception:
+                    fitness_score_42d_ago = fitness_score
+            elif len(evolution_data) > 1:
+                try:
+                    fitness_score_42d_ago = float(evolution_data['fitness_score'].iloc[0])
+                    if pd.isna(fitness_score_42d_ago):
+                        fitness_score_42d_ago = fitness_score
+                except Exception:
+                    fitness_score_42d_ago = fitness_score
+
             # Estadísticas de progreso
             weeks_data = len(weekly_trimp)
             progress_pct = 0
@@ -911,6 +1093,7 @@ class GarminDataAnalyzer:
 
             return {
                 'fitness_score': round(fitness_score, 1),
+                'fitness_score_42d_ago': round(fitness_score_42d_ago, 1),
                 'ctl': round(current_ctl, 1),
                 'atl': round(current_atl, 1),
                 'tsb': round(current_tsb, 1),
@@ -928,6 +1111,73 @@ class GarminDataAnalyzer:
 
         except Exception:
             return self._empty_fitness_score()
+
+    @staticmethod
+    def _estimate_hrr_from_activity(activity_type, speed_kmh: float, has_distance: bool) -> float:
+        """
+        Estima la fracción de reserva de FC (0-1) cuando no hay pulsómetro,
+        usando una curva específica por tipo de deporte.
+
+        El bug anterior aplicaba la curva de carrera a todas las actividades:
+        una bici a 25 km/h salía como Z5 (90% HRR) cuando en realidad es Z2.
+        """
+        act = str(activity_type or '').lower()
+
+        if any(k in act for k in ['cycling', 'bike', 'biking', 'ciclismo', 'bici', 'spinning']):
+            sport = 'cycling'
+        elif any(k in act for k in ['swim', 'natac']):
+            sport = 'swimming'
+        elif any(k in act for k in ['walk', 'caminar', 'hiking', 'senderismo', 'marcha']):
+            sport = 'walking'
+        elif any(k in act for k in ['running', 'run', 'carrera', 'correr', 'trail', 'jog']):
+            sport = 'running'
+        elif any(k in act for k in ['strength', 'fuerza', 'weights', 'pesas', 'gym', 'crossfit']):
+            sport = 'strength'
+        elif any(k in act for k in ['yoga', 'pilates', 'stretch', 'flexibilidad']):
+            sport = 'flexibility'
+        elif any(k in act for k in ['rowing', 'remo']):
+            sport = 'rowing'
+        elif any(k in act for k in ['ski', 'snow', 'esqui']):
+            sport = 'skiing'
+        else:
+            sport = 'other'
+
+        # Sin distancia (gym, yoga, etc.) → intensidad típica del deporte
+        if not has_distance or speed_kmh <= 0:
+            defaults = {
+                'strength': 0.55,
+                'flexibility': 0.40,
+                'cycling': 0.55,
+                'swimming': 0.65,
+                'running': 0.55,
+                'walking': 0.40,
+                'rowing': 0.60,
+                'skiing': 0.55,
+                'other': 0.50,
+            }
+            return defaults.get(sport, 0.50)
+
+        # Con distancia, mapear velocidad → %HRR por deporte
+        if sport == 'cycling':
+            # 15 km/h easy~51%, 25 km/h~65%, 35 km/h~79%, 45 km/h~93%
+            hr_pct = 0.30 + speed_kmh * 0.014
+            return min(0.92, max(0.40, hr_pct))
+        elif sport == 'swimming':
+            # 2 km/h~58%, 3.5 km/h~72%, 5 km/h~85%
+            hr_pct = 0.40 + speed_kmh * 0.09
+            return min(0.92, max(0.50, hr_pct))
+        elif sport == 'walking':
+            # 4 km/h~49%, 6 km/h~61%, 7 km/h~67% marcha rápida
+            hr_pct = 0.25 + speed_kmh * 0.06
+            return min(0.75, max(0.35, hr_pct))
+        elif sport == 'rowing':
+            hr_pct = 0.30 + speed_kmh * 0.04
+            return min(0.90, max(0.50, hr_pct))
+        else:
+            # running, trail, skiing, other con distancia
+            # 6 km/h~53%, 10 km/h~68%, 14 km/h~83%, 18 km/h~95%
+            hr_pct = 0.30 + speed_kmh * 0.038
+            return min(0.95, max(0.45, hr_pct))
 
     def _calculate_trimp_row(self, row, max_hr: int, resting_hr: int, gender: str) -> float:
         """
@@ -964,22 +1214,15 @@ class GarminDataAnalyzer:
             # Fórmula TRIMP de Banister con coeficientes correctos
             trimp = duration * hr_reserve * k_coefficient * np.exp(y_factor * hr_reserve)
         else:
-            # Estimación mejorada sin HR basada en duración y distancia
+            # Sin HR: estimar %HRR según tipo de deporte (curva específica por actividad)
             distance = row.get('distance', 0)
             if pd.isna(distance):
                 distance = 0
-
-            # Estimar intensidad basada en velocidad si hay distancia
-            if distance > 0 and duration > 0:
-                speed_kmh = distance / (duration / 60)  # km/h
-                # Estimar %HRR basado en velocidad (modelo simplificado)
-                # Velocidad 6 km/h ≈ 50% HRR, 12 km/h ≈ 85% HRR
-                estimated_hr_pct = min(0.90, max(0.45, 0.35 + speed_kmh * 0.04))
-                trimp = duration * estimated_hr_pct * k_coefficient * np.exp(y_factor * estimated_hr_pct)
-            else:
-                # Sin datos suficientes, asumir intensidad moderada (~55% HRR)
-                estimated_hr_pct = 0.55
-                trimp = duration * estimated_hr_pct * k_coefficient * np.exp(y_factor * estimated_hr_pct)
+            speed_kmh = (distance / (duration / 60)) if (distance > 0 and duration > 0) else 0.0
+            estimated_hr_pct = self._estimate_hrr_from_activity(
+                row.get('activity_type'), speed_kmh, has_distance=(distance > 0)
+            )
+            trimp = duration * estimated_hr_pct * k_coefficient * np.exp(y_factor * estimated_hr_pct)
 
         return trimp
 
@@ -1037,27 +1280,32 @@ class GarminDataAnalyzer:
 
     def _get_population_percentile(self, fitness_score: float, age: int, gender: str) -> int:
         """
-        Calcula el percentil poblacional basado en fitness score.
+        Calcula el percentil dentro de la población deportiva (no general)
+        basado en el fitness score.
 
-        Usa la aproximación de Abramowitz y Stegun para la función error,
-        que tiene precisión de ~1.5×10^-7 (mucho mejor que la aproximación tanh).
+        Distribución calibrada para que la escala 0-100 del score sea coherente
+        con el percentil:
+        - Media: 50 (coincide con el centro de la escala atlética del score:
+          "aficionado activo" con CTL≈70)
+        - Desviación estándar: 15
+        - Score 50 → percentil 50, Score 65 → percentil ~84, Score 35 → ~16
 
-        Distribución basada en datos epidemiológicos de fitness poblacional:
-        - Media poblacional: ~35 (la mayoría de la población es sedentaria)
-        - Desviación estándar: ~18 (alta variabilidad)
+        Usa la aproximación de Abramowitz y Stegun para la CDF normal
+        (precisión ~1.5×10^-7).
         """
         # Validar fitness_score
         if pd.isna(fitness_score):
             fitness_score = 0
 
-        # Ajustar por edad: personas mayores con mismo score están mejor posicionadas
-        # ya que la población general también declina con edad
-        age_adjustment = max(0, (age - 35) * 0.4)
+        # Ajuste por edad reducido: el score ya aplica age_factor en
+        # _normalize_fitness_score, así que aquí basta con un ajuste suave
+        # para reflejar que mantener forma con más edad merece más percentil.
+        age_adjustment = max(0, (age - 35) * 0.2)
         adjusted_score = fitness_score + age_adjustment
 
-        # Parámetros de distribución poblacional
-        mean_pop = 35  # Media más baja (población general es sedentaria)
-        std_pop = 18   # Mayor variabilidad
+        # Parámetros de distribución (población deportiva, coherente con escala del score)
+        mean_pop = 50
+        std_pop = 15
 
         # Calcular z-score
         z = (adjusted_score - mean_pop) / std_pop
@@ -1131,10 +1379,36 @@ class GarminDataAnalyzer:
         else:
             return "Muy fatigado - Riesgo de sobreentrenamiento"
 
+    @staticmethod
+    def derive_fitness_level_from_score(score: float) -> str:
+        """
+        Deriva la etiqueta de Nivel de Forma directamente desde el Fitness Score 0-100,
+        para que las pestañas 'Análisis de Forma' y 'Fitness Score' sean coherentes
+        (antes una iba por horas/semana planas y la otra por CTL/TRIMP).
+
+        Bandas alineadas con _normalize_fitness_score:
+            0-25 Principiante | 25-45 Recreacional | 45-60 Aficionado activo
+            60-75 Competidor amateur | 75-85 Semi-profesional | 85+ Élite
+        """
+        if score is None or pd.isna(score) or score < 0:
+            return 'Principiante'
+        if score >= 85:
+            return 'Élite'
+        if score >= 75:
+            return 'Semi-profesional'
+        if score >= 60:
+            return 'Avanzado'
+        if score >= 45:
+            return 'Intermedio-Avanzado'
+        if score >= 25:
+            return 'Intermedio'
+        return 'Principiante'
+
     def _empty_fitness_score(self) -> dict:
         """Devuelve un diccionario vacío de fitness score."""
         return {
             'fitness_score': 0,
+            'fitness_score_42d_ago': 0,
             'ctl': 0,
             'atl': 0,
             'tsb': 0,
